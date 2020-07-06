@@ -2,6 +2,7 @@ package art
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 )
 
@@ -17,19 +18,41 @@ func comparePrefix(k1, k2 []byte, offset int) int {
 		}
 	}
 	if i-offset > maxPrefixLen {
-		return maxPrefixLen - 1
+		return maxPrefixLen
 	}
 	return i - offset
 }
 
+// walkFn should return false if iteration should be terminated.
+type walkFn func(node, int) bool
+
 type node interface {
 	insert(leaf, int) node
+	get([]byte, int) ValueType
+	walk(walkFn, int) bool
 }
 
 type inner struct {
 	prefix    [maxPrefixLen]byte
 	prefixLen int
 	node      inode
+}
+
+func (n *inner) walk(f walkFn, depth int) bool {
+	if !f(n, depth) {
+		return false
+	}
+	return n.node.walk(f, depth+n.prefixLen+1)
+}
+
+func (n *inner) get(key []byte, depth int) ValueType {
+	cmp := comparePrefix(n.prefix[:n.prefixLen], key[depth:], 0)
+	if cmp != n.prefixLen {
+		return nil
+	}
+	depth += n.prefixLen
+	_, next := n.node.child(key[depth])
+	return next.get(key, depth+1)
 }
 
 func (n *inner) insert(l leaf, depth int) node {
@@ -62,17 +85,34 @@ func (n *inner) insert(l leaf, depth int) node {
 	return n
 }
 
+func (n *inner) String() string {
+	return fmt.Sprintf("inner[%x]%s", n.prefix[:n.prefixLen], n.node)
+}
+
 type leaf struct {
 	key   []byte
-	value interface{}
+	value ValueType
 }
 
-func (l leaf) cmp(other leaf) bool {
-	return bytes.Compare(l.key, other.key) == 0
+func (l leaf) walk(fn walkFn, depth int) bool {
+	return fn(l, depth)
 }
 
+func (l leaf) get(key []byte, depth int) ValueType {
+	if l.cmp(key) {
+		return l.value
+	}
+	return nil
+}
+
+func (l leaf) cmp(other []byte) bool {
+	return bytes.Compare(l.key, other) == 0
+}
+
+// insert updates leaf if key matches previous leaf or performs expansion if needed.
+// expansion creates node4 and adds two leafs as childs.
 func (l leaf) insert(other leaf, depth int) node {
-	if other.cmp(l) {
+	if other.cmp(l.key) {
 		return other
 	}
 	cmp := comparePrefix(l.key, other.key, depth)
@@ -87,27 +127,31 @@ func (l leaf) insert(other leaf, depth int) node {
 	return nn
 }
 
-// inode is one of the inner nodes representation
+func (l leaf) String() string {
+	return fmt.Sprintf("leaf[%x]", l.key)
+}
+
+// inode is one of the inner nodes concrete representation
+// node4/node16/node48/node256
 type inode interface {
 	child(byte) (int, node)
 	replace(int, node)
 	full() bool
 	grow() inode
 	addChild(byte, node)
+	walk(walkFn, int) bool
 }
 
 type node4 struct {
+	lth    uint8
 	keys   [4]byte
 	childs [4]node
 }
 
 func (n *node4) index(k byte) int {
-	for i, b := range n.keys {
-		if k <= b {
-			return i
-		}
-	}
-	return 0
+	return sort.Search(int(n.lth), func(i int) bool {
+		return n.keys[i] >= k
+	})
 }
 
 func (n *node4) child(k byte) (int, node) {
@@ -125,6 +169,7 @@ func (n *node4) addChild(k byte, child node) {
 	copy(n.keys[idx+1:], n.keys[idx:])
 	n.keys[idx] = k
 	n.childs[idx] = child
+	n.lth++
 }
 
 func (n *node4) full() bool {
@@ -138,14 +183,29 @@ func (n *node4) grow() inode {
 	return nn
 }
 
+func (n *node4) walk(fn walkFn, depth int) bool {
+	for i := range n.childs {
+		if uint8(i) < n.lth {
+			if !n.childs[i].walk(fn, depth) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (n *node4) String() string {
+	return fmt.Sprintf("n4[%x]", n.keys[:n.lth])
+}
+
 type node16 struct {
-	lth    int
+	lth    uint8
 	keys   [16]byte
 	childs [16]node
 }
 
 func (n *node16) index(k byte) int {
-	return sort.Search(n.lth, func(i int) bool {
+	return sort.Search(int(n.lth), func(i int) bool {
 		return n.keys[i] >= k
 	})
 }
@@ -164,12 +224,12 @@ func (n *node16) full() bool {
 }
 
 func (n *node16) addChild(k byte, child node) {
-	n.lth++
 	idx := n.index(k)
 	copy(n.childs[idx+1:], n.childs[idx:])
 	copy(n.keys[idx+1:], n.keys[idx:])
 	n.keys[idx] = k
 	n.childs[idx] = child
+	n.lth++
 }
 
 func (n *node16) grow() inode {
@@ -179,6 +239,17 @@ func (n *node16) grow() inode {
 		nn.keys[n.keys[i]] = i
 	}
 	return nn
+}
+
+func (n *node16) walk(fn walkFn, depth int) bool {
+	for i := range n.childs {
+		if uint8(i) < n.lth {
+			if !n.childs[i].walk(fn, depth) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type node48 struct {
@@ -214,6 +285,17 @@ func (n *node48) replace(idx int, child node) {
 	n.childs[idx] = child
 }
 
+func (n *node48) walk(fn walkFn, depth int) bool {
+	for _, child := range n.childs {
+		if child != nil {
+			if !child.walk(fn, depth) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 type node256 struct {
 	childs [256]node
 }
@@ -236,4 +318,15 @@ func (n *node256) addChild(k byte, child node) {
 
 func (n *node256) grow() inode {
 	panic("node256 won't grow")
+}
+
+func (n *node256) walk(fn walkFn, depth int) bool {
+	for _, child := range n.childs {
+		if child != nil {
+			if !child.walk(fn, depth) {
+				return false
+			}
+		}
+	}
+	return true
 }
