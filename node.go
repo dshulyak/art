@@ -151,9 +151,12 @@ func (l leaf) insert(other leaf, depth int) node {
 		key = other.key
 	}
 	copy(nn.prefix[:], key[depth:depth+cmp])
-	rst := nn.insert(other, depth)
-	rst = rst.insert(l, depth)
-	return rst
+	// max prefix length is 8 byte, if common prefix longer than
+	// that then multiple inner nodes will be inserted
+	// see `log keys` test
+	_ = nn.insert(other, depth)
+	_ = nn.insert(l, depth)
+	return nn
 }
 
 func (l leaf) String() string {
