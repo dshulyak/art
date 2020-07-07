@@ -1,7 +1,6 @@
 package art
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -10,11 +9,11 @@ import (
 func TestComparePrefix(t *testing.T) {
 	p1 := []byte{1, 1, 1}
 	p2 := []byte{2, 2, 2}
-	require.Equal(t, 0, comparePrefix(p1, p2, 0))
+	require.Equal(t, 0, comparePrefix(p1, p2, 0, 0))
 
 	p1 = []byte{1, 1, 1, 1, 1, 1, 1, 1}
 	p2 = []byte{1, 2}
-	require.Equal(t, 1, comparePrefix(p1, p2, 0))
+	require.Equal(t, 1, comparePrefix(p1, p2, 0, 0))
 }
 
 func TestInsertLeaf(t *testing.T) {
@@ -40,20 +39,12 @@ func TestUncompress(t *testing.T) {
 	i, ok := n.(*inner)
 	require.True(t, ok)
 	require.Equal(t, i.prefix[:i.prefixLen], []byte{7})
-	n.walk(func(n node, depth int) bool {
-		padding := make([]byte, depth)
-		for i := range padding {
-			padding[i] = 0x2e
-		}
-		fmt.Printf("%s%s\n", string(padding), n)
-		return true
-	}, 0)
 }
 
 func TestNode4AddChild(t *testing.T) {
 	n := node4{}
-	n.addChild(4, nil)
-	require.Equal(t, []byte{4, 0, 0, 0}, n.keys[:])
 	n.addChild(3, nil)
-	require.Equal(t, []byte{3, 4, 0, 0}, n.keys[:])
+	require.Equal(t, []byte{3, 0, 0, 0}, n.keys[:])
+	n.addChild(1, nil)
+	require.Equal(t, []byte{1, 3, 0, 0}, n.keys[:])
 }

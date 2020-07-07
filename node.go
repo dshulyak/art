@@ -10,17 +10,29 @@ const (
 	maxPrefixLen int = 8
 )
 
-func comparePrefix(k1, k2 []byte, offset int) int {
-	i := offset
-	for ; i < len(k1) && i < len(k2); i++ {
+func comparePrefix(k1, k2 []byte, off1, off2 int) int {
+	k1lth := len(k1)
+	k2lth := len(k2)
+
+	if off1 < k1lth {
+		k1 = k1[off1:]
+	} else {
+		return 0
+	}
+	if off2 < k2lth {
+		k2 = k2[off2:]
+	}
+
+	i := 0
+	for ; i < k1lth && i < k2lth; i++ {
 		if k1[i] != k2[i] {
 			break
 		}
 	}
-	if i-offset > maxPrefixLen {
+	if i > maxPrefixLen {
 		return maxPrefixLen
 	}
-	return i - offset
+	return i
 }
 
 // walkFn should return false if iteration should be terminated.
@@ -30,35 +42,45 @@ type node interface {
 	insert(leaf, int) node
 	get([]byte, int) ValueType
 	walk(walkFn, int) bool
+	String() string
 }
 
 type inner struct {
 	prefix    [maxPrefixLen]byte
 	prefixLen int
 	node      inode
+
+	// null is an additional pointer for storing leaf with a key that
+	// terminates on the depth of this node
+	null node
 }
 
 func (n *inner) walk(f walkFn, depth int) bool {
 	if !f(n, depth) {
 		return false
 	}
+	if n.null != nil && !f(n.null, depth+n.prefixLen+1) {
+		return false
+	}
 	return n.node.walk(f, depth+n.prefixLen+1)
 }
 
 func (n *inner) get(key []byte, depth int) ValueType {
-	cmp := comparePrefix(n.prefix[:n.prefixLen], key[depth:], 0)
+	cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
 	if cmp != n.prefixLen {
 		return nil
 	}
 	depth += n.prefixLen
+	if depth == len(key) {
+		return n.null.get(key, depth+1)
+	}
 	_, next := n.node.child(key[depth])
 	return next.get(key, depth+1)
 }
 
 func (n *inner) insert(l leaf, depth int) node {
-	// FIXME out of bounds in l.key[depth:]
-	// uncompress path if needed
-	cmp := comparePrefix(n.prefix[:n.prefixLen], l.key[depth:], 0)
+	// uncompress path
+	cmp := comparePrefix(n.prefix[:n.prefixLen], l.key, 0, depth)
 	if cmp != n.prefixLen {
 		child := &inner{
 			prefixLen: n.prefixLen - cmp,
@@ -67,12 +89,16 @@ func (n *inner) insert(l leaf, depth int) node {
 		copy(child.prefix[:], n.prefix[cmp:])
 		n.node = &node4{}
 		n.node.addChild(l.key[depth+cmp], l)
-		n.node.addChild(n.prefix[cmp], child)
+		n.node.addChild(n.prefix[cmp], n)
 		n.prefixLen = cmp
 		return n
 	}
 	// normal insertion flow
 	depth += n.prefixLen
+	if len(l.key) == depth {
+		n.null = l
+		return n
+	}
 	idx, next := n.node.child(l.key[depth])
 	if next != nil {
 		n.node.replace(idx, next.insert(l, depth+1))
@@ -115,16 +141,19 @@ func (l leaf) insert(other leaf, depth int) node {
 	if other.cmp(l.key) {
 		return other
 	}
-	cmp := comparePrefix(l.key, other.key, depth)
+	cmp := comparePrefix(l.key, other.key, depth, depth)
 	nn := &inner{
 		prefixLen: cmp,
 		node:      &node4{},
 	}
-	copy(nn.prefix[:], l.key[depth:depth+cmp])
-	depth += nn.prefixLen
-	nn.node.addChild(l.key[depth], l)
-	nn.node.addChild(other.key[depth], other)
-	return nn
+	key := l.key
+	if len(other.key) > len(key) {
+		key = other.key
+	}
+	copy(nn.prefix[:], key[depth:depth+cmp])
+	rst := nn.insert(other, depth)
+	rst = rst.insert(l, depth)
+	return rst
 }
 
 func (l leaf) String() string {
@@ -156,6 +185,9 @@ func (n *node4) index(k byte) int {
 
 func (n *node4) child(k byte) (int, node) {
 	idx := n.index(k)
+	if n.keys[idx] != k {
+		return idx, nil
+	}
 	return idx, n.childs[idx]
 }
 
@@ -212,6 +244,9 @@ func (n *node16) index(k byte) int {
 
 func (n *node16) child(k byte) (int, node) {
 	idx := n.index(k)
+	if n.keys[idx] != k {
+		return idx, nil
+	}
 	return idx, n.childs[idx]
 }
 
