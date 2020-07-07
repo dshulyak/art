@@ -51,6 +51,35 @@ func TestTreeInsert(t *testing.T) {
 			},
 		},
 		{
+			desc: "grow",
+			pretty: `inner[]n16[0102030405]
+.leaf[01]
+.leaf[02]
+.leaf[03]
+.leaf[04]
+.leaf[05]`,
+			inserts: []kv{
+				{[]byte{3}, 3},
+				{[]byte{1}, 1},
+				{[]byte{4}, 4},
+				{[]byte{5}, 5},
+				{[]byte{2}, 2},
+			},
+		},
+		{
+			desc: "uncompress path",
+			pretty: `inner[]n4[0001]
+.inner[]n4[0102]
+..leaf[0001]
+..leaf[0002]
+.leaf[0102]`,
+			inserts: []kv{
+				{[]byte{0, 1}, 1},
+				{[]byte{0, 2}, 2},
+				{[]byte{1, 2}, 3},
+			},
+		},
+		{
 			desc:    "lazy leaf insert",
 			pretty:  `leaf[010101]`,
 			inserts: []kv{{[]byte{1, 1, 1}, 10}},

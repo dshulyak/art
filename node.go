@@ -21,6 +21,8 @@ func comparePrefix(k1, k2 []byte, off1, off2 int) int {
 	}
 	if off2 < k2lth {
 		k2 = k2[off2:]
+	} else {
+		return 0
 	}
 
 	i := 0
@@ -55,14 +57,14 @@ type inner struct {
 	null node
 }
 
-func (n *inner) walk(f walkFn, depth int) bool {
-	if !f(n, depth) {
+func (n *inner) walk(fn walkFn, depth int) bool {
+	if !fn(n, depth) {
 		return false
 	}
-	if n.null != nil && !f(n.null, depth+n.prefixLen+1) {
+	if n.null != nil && !fn(n.null, depth+n.prefixLen+1) {
 		return false
 	}
-	return n.node.walk(f, depth+n.prefixLen+1)
+	return n.node.walk(fn, depth+n.prefixLen+1)
 }
 
 func (n *inner) get(key []byte, depth int) ValueType {
@@ -83,22 +85,22 @@ func (n *inner) insert(l leaf, depth int) node {
 	cmp := comparePrefix(n.prefix[:n.prefixLen], l.key, 0, depth)
 	if cmp != n.prefixLen {
 		child := &inner{
-			prefixLen: n.prefixLen - cmp,
+			prefixLen: n.prefixLen - cmp - 1,
 			node:      n.node,
 		}
 		copy(child.prefix[:], n.prefix[cmp:])
 		n.node = &node4{}
 		n.node.addChild(l.key[depth+cmp], l)
-		n.node.addChild(n.prefix[cmp], n)
+		n.node.addChild(n.prefix[cmp], child)
 		n.prefixLen = cmp
 		return n
 	}
-	// normal insertion flow
 	depth += n.prefixLen
 	if len(l.key) == depth {
 		n.null = l
 		return n
 	}
+	// normal insertion flow
 	idx, next := n.node.child(l.key[depth])
 	if next != nil {
 		n.node.replace(idx, next.insert(l, depth+1))
@@ -213,6 +215,7 @@ func (n *node4) full() bool {
 
 func (n *node4) grow() inode {
 	nn := &node16{}
+	nn.lth = n.lth
 	copy(nn.keys[:], n.keys[:])
 	copy(nn.childs[:], n.childs[:])
 	return nn
@@ -290,8 +293,12 @@ func (n *node16) walk(fn walkFn, depth int) bool {
 	return true
 }
 
+func (n *node16) String() string {
+	return fmt.Sprintf("n16[%x]", n.keys[:n.lth])
+}
+
 type node48 struct {
-	next   int
+	lth    int
 	keys   [256]int
 	childs [48]node
 }
@@ -302,13 +309,13 @@ func (n *node48) child(k byte) (int, node) {
 }
 
 func (n *node48) full() bool {
-	return n.next == 48
+	return n.lth == 48
 }
 
 func (n *node48) addChild(k byte, child node) {
-	n.keys[k] = n.next
-	n.childs[n.next] = child
-	n.next++
+	n.keys[k] = n.lth
+	n.childs[n.lth] = child
+	n.lth++
 }
 
 func (n *node48) grow() inode {
