@@ -6,9 +6,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	typeInsert = iota + 1
+	typeDelete
+)
+
+func delOp(key []byte) op {
+	return op{
+		kv{key: key},
+		typeDelete,
+	}
+}
+
+func insertOp(key []byte, value interface{}) op {
+	return op{
+		kv{key, value},
+		typeInsert,
+	}
+}
+
+type op struct {
+	kv
+	typ int
+}
+
 type kv struct {
 	key   []byte
-	value int
+	value interface{}
 }
 
 func TestTreeInsert(t *testing.T) {
@@ -166,6 +190,139 @@ func TestTreeInsert(t *testing.T) {
 			for _, insert := range tc.inserts {
 				require.Equal(t, insert.value, tree.Get(insert.key))
 			}
+		})
+	}
+}
+
+func TestTreeDelete(t *testing.T) {
+	for _, tc := range []struct {
+		desc       string
+		pretty     string
+		operations []op
+	}{
+		{
+			desc:   "collapse inner",
+			pretty: `leaf[02]`,
+			operations: []op{
+				insertOp([]byte{1}, 1),
+				insertOp([]byte{2}, 2),
+				delOp([]byte{1}),
+			},
+		},
+		{
+			desc: "compress path",
+			pretty: `inner[01010202]n4[0203]
+.....leaf[0101020202]
+.....leaf[0101020203]`,
+			operations: []op{
+				insertOp([]byte{1, 1, 2, 2, 3}, 1),
+				insertOp([]byte{1, 1, 1, 3}, 3),
+				insertOp([]byte{1, 1, 2, 2, 2}, 2),
+				delOp([]byte{1, 1, 1, 3}),
+			},
+		},
+		{
+			desc: "direct prefix",
+			pretty: `inner[01]n4[0102]
+..leaf[0101]
+..leaf[0102]`,
+			operations: []op{
+				insertOp([]byte{1, 1}, 1),
+				insertOp([]byte{1}, 3),
+				insertOp([]byte{1, 2}, 2),
+				delOp([]byte{1}),
+			},
+		},
+		{
+			desc: "shrink",
+			pretty: `inner[]n4[01020405]
+.leaf[01]
+.leaf[02]
+.leaf[04]
+.leaf[05]`,
+			operations: []op{
+				insertOp([]byte{1}, 1),
+				insertOp([]byte{2}, 2),
+				insertOp([]byte{3}, 3),
+				insertOp([]byte{4}, 4),
+				insertOp([]byte{5}, 5),
+				delOp([]byte{3}),
+			},
+		},
+		{
+			desc: "normal delete",
+			pretty: `inner[]n4[010204]
+.leaf[01]
+.leaf[02]
+.leaf[04]`,
+			operations: []op{
+				insertOp([]byte{1}, 1),
+				insertOp([]byte{2}, 2),
+				insertOp([]byte{3}, 3),
+				insertOp([]byte{4}, 4),
+				delOp([]byte{3}),
+			},
+		},
+		{
+			desc:   "delete all",
+			pretty: ``,
+			operations: []op{
+				insertOp([]byte{1}, 1),
+				insertOp([]byte{2}, 2),
+				delOp([]byte{1}),
+				delOp([]byte{2}),
+			},
+		},
+		{
+			desc: "delete nonexisting",
+			pretty: `inner[]n4[0102]
+.leaf[01]
+.leaf[02]`,
+			operations: []op{
+				insertOp([]byte{1}, 1),
+				insertOp([]byte{2}, 2),
+				delOp([]byte{3}),
+			},
+		},
+		{
+			desc: "no compress for long keys",
+			pretty: `inner[0100000000000000]n4[02]
+.........inner[]n4[0102]
+..........leaf[01000000000000000201]
+..........leaf[01000000000000000202]`,
+			operations: []op{
+				insertOp([]byte{1, 0, 0, 0, 0, 0, 0, 0, 2, 1}, 1),
+				insertOp([]byte{1, 0, 0, 0, 0, 0, 0, 0, 2, 2}, 2),
+				insertOp([]byte{1, 0, 0, 0, 0, 0, 0, 0, 1}, 3),
+				delOp([]byte{1, 0, 0, 0, 0, 0, 0, 0, 1}),
+			},
+		},
+		{
+			desc: "reprefix long keys",
+			pretty: `inner[0100000000000001]n4[02]
+.........inner[]n4[0203]
+..........leaf[01000000000000010202]
+..........leaf[01000000000000010203]`,
+			operations: []op{
+				insertOp([]byte{1, 0, 0, 0, 0, 0, 0, 2, 1}, 1),
+				insertOp([]byte{1, 0, 0, 0, 0, 0, 0, 1, 2, 2}, 2),
+				insertOp([]byte{1, 0, 0, 0, 0, 0, 0, 1, 2, 3}, 3),
+				delOp([]byte{1, 0, 0, 0, 0, 0, 0, 2, 1}),
+			},
+		},
+	} {
+		tc := tc
+		t.Run(tc.desc, func(t *testing.T) {
+			tree := Tree{}
+			for _, operation := range tc.operations {
+				switch operation.typ {
+				case typeInsert:
+					tree.Insert(operation.key, operation.value)
+				case typeDelete:
+					tree.Delete(operation.key)
+				}
+			}
+			require.Equal(t, tc.pretty, tree.Pretty())
 		})
 	}
 }

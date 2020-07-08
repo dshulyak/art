@@ -26,6 +26,10 @@ func (t *Tree) Get(key []byte) ValueType {
 	return t.root.get(key, 0)
 }
 
+func (t *Tree) Delete(key []byte) {
+	t.root = t.root.del(key, 0)
+}
+
 func (t *Tree) Pretty() string {
 	if t.root == nil {
 		return ""

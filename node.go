@@ -42,8 +42,10 @@ type walkFn func(node, int) bool
 
 type node interface {
 	insert(leaf, int) node
+	del([]byte, int) node
 	get([]byte, int) ValueType
 	walk(walkFn, int) bool
+	inherit([maxPrefixLen]byte, int) node
 	String() string
 }
 
@@ -113,6 +115,74 @@ func (n *inner) insert(l leaf, depth int) node {
 	return n
 }
 
+// del deletes the node with key and returns pointer for the parent to update himself.
+// address of the pointer will be changed when nodes are merged and path is compressed
+// or inner nodes are completely collapsed and pointer will refer to leaf
+func (n *inner) del(key []byte, depth int) node {
+	cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
+	if cmp != n.prefixLen {
+		return n
+	}
+	depth += n.prefixLen
+	if depth == len(key) {
+		n.null = n.null.del(key, depth+1)
+		return n
+	}
+
+	idx, next := n.node.child(key[depth])
+	if next == nil {
+		return n
+	}
+	n.node.replace(idx, next.del(key, depth+1))
+	if n.node.min() {
+		nn := n.node.shrink()
+		// will be false only for node4
+		if nn != nil {
+			n.node = nn
+			return n
+		}
+		// inner nodes with max prefix should be kept even if they have 1 child
+		if n.prefixLen == maxPrefixLen {
+			return n
+		}
+		// for node4 extend prefix or collapse inner nodes
+		leftb, left := n.node.leftmost()
+		n.prefix[n.prefixLen] = leftb
+		n.prefixLen++
+		return left.inherit(n.prefix, n.prefixLen)
+	}
+	return n
+}
+
+func (n *inner) inherit(prefix [maxPrefixLen]byte, prefixLen int) node {
+	// two cases for inheritance of the prefix
+	// 1. new prefixLen is <= max prefix len
+	total := n.prefixLen + prefixLen
+	if total <= maxPrefixLen {
+		copy(prefix[prefixLen:], n.prefix[:])
+		n.prefix = prefix
+		n.prefixLen += total
+		return n
+	}
+	// 2. >= max prefix len
+	// resplit prefix, first part should have 8-byte length
+	// second - leftover
+	// pointer should use 9th byte
+	// see repfre long keys test
+	nn := &inner{
+		node: &node4{},
+	}
+	nn.prefix = prefix
+	nn.prefixLen = maxPrefixLen
+	copy(nn.prefix[prefixLen:], n.prefix[:])
+
+	n.prefixLen = total - maxPrefixLen - 1
+	kbyte := n.prefix[maxPrefixLen-prefixLen]
+	copy(n.prefix[:], n.prefix[maxPrefixLen-prefixLen+1:])
+	nn.node.addChild(kbyte, n)
+	return nn
+}
+
 func (n *inner) String() string {
 	return fmt.Sprintf("inner[%x]%s", n.prefix[:n.prefixLen], n.node)
 }
@@ -161,6 +231,17 @@ func (l leaf) insert(other leaf, depth int) node {
 	return nn
 }
 
+func (l leaf) del(key []byte, depth int) node {
+	if l.cmp(key) {
+		return nil
+	}
+	return l
+}
+
+func (l leaf) inherit([maxPrefixLen]byte, int) node {
+	return l
+}
+
 func (l leaf) String() string {
 	return fmt.Sprintf("leaf[%x]", l.key)
 }
@@ -169,9 +250,19 @@ func (l leaf) String() string {
 // node4/node16/node48/node256
 type inode interface {
 	child(byte) (int, node)
+	// replace sets node at the index
+	// if node is nil
 	replace(int, node)
 	full() bool
 	grow() inode
+	// min refers to the size of the node, should return true if size is less
+	// then the minimum size
+	min() bool
+	// shrink is the opposite to grow
+	// if node is of the smallest type (node4) nil will be returned
+	shrink() inode
+	// leftmost returns node with lowest index
+	leftmost() (byte, node)
 	addChild(byte, node)
 	walk(walkFn, int) bool
 }
@@ -190,6 +281,9 @@ func (n *node4) index(k byte) int {
 
 func (n *node4) child(k byte) (int, node) {
 	idx := n.index(k)
+	if uint8(idx) == n.lth {
+		return 0, nil
+	}
 	if n.keys[idx] != k {
 		return idx, nil
 	}
@@ -197,7 +291,19 @@ func (n *node4) child(k byte) (int, node) {
 }
 
 func (n *node4) replace(idx int, child node) {
-	n.childs[idx] = child
+	if child == nil {
+		copy(n.keys[idx:], n.keys[idx+1:])
+		copy(n.childs[idx:], n.childs[idx+1:])
+		n.keys[n.lth-1] = 0
+		n.childs[n.lth-1] = nil
+		n.lth--
+	} else {
+		n.childs[idx] = child
+	}
+}
+
+func (n *node4) leftmost() (byte, node) {
+	return n.keys[0], n.childs[0]
 }
 
 func (n *node4) addChild(k byte, child node) {
@@ -207,6 +313,14 @@ func (n *node4) addChild(k byte, child node) {
 	n.keys[idx] = k
 	n.childs[idx] = child
 	n.lth++
+}
+
+func (n *node4) min() bool {
+	return n.lth <= 1
+}
+
+func (n *node4) shrink() inode {
+	return nil
 }
 
 func (n *node4) full() bool {
@@ -250,6 +364,9 @@ func (n *node16) index(k byte) int {
 
 func (n *node16) child(k byte) (int, node) {
 	idx := n.index(k)
+	if uint8(idx) == n.lth {
+		return 0, nil
+	}
 	if n.keys[idx] != k {
 		return idx, nil
 	}
@@ -257,7 +374,15 @@ func (n *node16) child(k byte) (int, node) {
 }
 
 func (n *node16) replace(idx int, child node) {
-	n.childs[idx] = child
+	if child == nil {
+		copy(n.keys[idx:], n.keys[idx+1:])
+		copy(n.childs[idx:], n.childs[idx+1:])
+		n.keys[n.lth-1] = 0
+		n.childs[n.lth-1] = nil
+		n.lth--
+	} else {
+		n.childs[idx] = child
+	}
 }
 
 func (n *node16) full() bool {
@@ -280,6 +405,22 @@ func (n *node16) grow() inode {
 		nn.keys[n.keys[i]] = i
 	}
 	return nn
+}
+
+func (n *node16) min() bool {
+	return n.lth <= 4
+}
+
+func (n *node16) shrink() inode {
+	nn := node4{}
+	copy(nn.keys[:], n.keys[:])
+	copy(nn.childs[:], n.childs[:])
+	nn.lth = n.lth
+	return &nn
+}
+
+func (n *node16) leftmost() (byte, node) {
+	return n.keys[0], n.childs[0]
 }
 
 func (n *node16) walk(fn walkFn, depth int) bool {
@@ -330,6 +471,18 @@ func (n *node48) replace(idx int, child node) {
 	n.childs[idx] = child
 }
 
+func (n *node48) min() bool {
+	return n.lth <= 16
+}
+
+func (n *node48) shrink() inode {
+	return n
+}
+
+func (n *node48) leftmost() (byte, node) {
+	panic("not implemented")
+}
+
 func (n *node48) walk(fn walkFn, depth int) bool {
 	for _, child := range n.childs {
 		if child != nil {
@@ -342,6 +495,7 @@ func (n *node48) walk(fn walkFn, depth int) bool {
 }
 
 type node256 struct {
+	lth    int
 	childs [256]node
 }
 
@@ -359,10 +513,23 @@ func (n *node256) full() bool {
 
 func (n *node256) addChild(k byte, child node) {
 	n.childs[k] = child
+	n.lth++
 }
 
 func (n *node256) grow() inode {
 	panic("node256 won't grow")
+}
+
+func (n *node256) min() bool {
+	return n.lth <= 48
+}
+
+func (n *node256) shrink() inode {
+	return n
+}
+
+func (n *node256) leftmost() (byte, node) {
+	panic("not implemented")
 }
 
 func (n *node256) walk(fn walkFn, depth int) bool {
