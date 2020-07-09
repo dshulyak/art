@@ -56,17 +56,10 @@ type inner struct {
 	prefix    [maxPrefixLen]byte
 	prefixLen int
 	node      inode
-
-	// null is an additional pointer for storing leaf with a key that
-	// terminates on the depth of this node
-	null node
 }
 
 func (n *inner) walk(fn walkFn, depth int) bool {
 	if !fn(n, depth) {
-		return false
-	}
-	if n.null != nil && !fn(n.null, depth+n.prefixLen+1) {
 		return false
 	}
 	return n.node.walk(fn, depth+n.prefixLen+1)
@@ -78,9 +71,6 @@ func (n *inner) get(key []byte, depth int) ValueType {
 		return nil
 	}
 	depth += n.prefixLen
-	if depth == len(key) {
-		return n.null.get(key, depth+1)
-	}
 	_, next := n.node.child(key[depth])
 	if next == nil {
 		return nil
@@ -96,20 +86,14 @@ func (n *inner) insert(l leaf, depth int) node {
 			prefixLen: n.prefixLen - cmp - 1,
 			node:      n.node,
 		}
-		copy(child.prefix[:], n.prefix[cmp:])
+		copy(child.prefix[:], n.prefix[child.prefixLen:])
 		n.node = &node4{}
-		n.prefixLen = cmp
-
+		n.node.addChild(l.key[depth+cmp], l)
 		n.node.addChild(n.prefix[cmp], child)
-		// TODO add a test for uncompressing path and adding direct prefix node
-		_ = n.insert(l, depth+cmp)
+		n.prefixLen = cmp
 		return n
 	}
 	depth += n.prefixLen
-	if len(l.key) == depth {
-		n.null = l
-		return n
-	}
 	// normal insertion flow
 	idx, next := n.node.child(l.key[depth])
 	if next != nil {
@@ -132,10 +116,6 @@ func (n *inner) del(key []byte, depth int) node {
 		return n
 	}
 	depth += n.prefixLen
-	if depth == len(key) {
-		n.null = n.null.del(key, depth+1)
-		return n
-	}
 
 	idx, next := n.node.child(key[depth])
 	if next == nil {
@@ -176,7 +156,7 @@ func (n *inner) inherit(prefix [maxPrefixLen]byte, prefixLen int) node {
 	// resplit prefix, first part should have 8-byte length
 	// second - leftover
 	// pointer should use 9th byte
-	// see repfre long keys test
+	// see long keys test
 	nn := &inner{
 		node: &node4{},
 	}
@@ -233,7 +213,7 @@ func (l leaf) insert(other leaf, depth int) node {
 	copy(nn.prefix[:], key[depth:depth+cmp])
 	// max prefix length is 8 byte, if common prefix longer than
 	// that then multiple inner nodes will be inserted
-	// see `log keys` test
+	// see `long keys` test
 	_ = nn.insert(other, depth)
 	_ = nn.insert(l, depth)
 	return nn

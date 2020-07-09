@@ -11,7 +11,7 @@ import (
 
 var (
 	seed       = flag.Int64("seed", time.Now().Unix(), "seed for the fuzz test")
-	iterations = flag.Int("iter", 1000000, "fuzz iterations")
+	iterations = flag.Int("iter", 1_000_000, "fuzz iterations")
 )
 
 const (
@@ -127,52 +127,6 @@ func TestTreeInsert(t *testing.T) {
 			},
 		},
 		{
-			desc: "prefix key",
-			pretty: `inner[01]n4[01]
-..leaf[01]
-..leaf[010101]`,
-			inserts: []kv{
-				{[]byte{1, 1, 1}, 10},
-				{[]byte{1}, 20},
-			},
-		},
-		{
-			desc: "null prefix",
-			pretty: `inner[01]n4[0001]
-..leaf[01]
-..leaf[0100]
-..leaf[0101]`,
-			inserts: []kv{
-				{[]byte{1, 1}, 10},
-				{[]byte{1}, 20},
-				{[]byte{1, 0}, 20},
-			},
-		},
-		{
-			desc: "null prefix to inner",
-			pretty: `inner[01]n4[0001]
-..leaf[01]
-..leaf[0100]
-..leaf[0101]`,
-			inserts: []kv{
-				{[]byte{1, 1}, 10},
-				{[]byte{1, 0}, 20},
-				{[]byte{1}, 20},
-			},
-		},
-		{
-			desc: "null prefix reverse",
-			pretty: `inner[01]n4[0001]
-..leaf[01]
-..leaf[0100]
-..leaf[0101]`,
-			inserts: []kv{
-				{[]byte{1}, 20},
-				{[]byte{1, 1}, 10},
-				{[]byte{1, 0}, 20},
-			},
-		},
-		{
 			desc: "multi inner",
 			pretty: `inner[01]n4[010203]
 ..inner[]n4[0203]
@@ -227,18 +181,6 @@ func TestTreeDelete(t *testing.T) {
 				insertOp([]byte{1, 1, 1, 3}, 3),
 				insertOp([]byte{1, 1, 2, 2, 2}, 2),
 				delOp([]byte{1, 1, 1, 3}),
-			},
-		},
-		{
-			desc: "direct prefix",
-			pretty: `inner[01]n4[0102]
-..leaf[0101]
-..leaf[0102]`,
-			operations: []op{
-				insertOp([]byte{1, 1}, 1),
-				insertOp([]byte{1}, 3),
-				insertOp([]byte{1, 2}, 2),
-				delOp([]byte{1}),
 			},
 		},
 		{
@@ -346,12 +288,34 @@ func TestFuzzTree(t *testing.T) {
 
 	keys := map[string]int{}
 	for i := 0; i < *iterations; i++ {
-		size := rand.Intn(10)
 		value := rand.Int()
-		key := make([]byte, size)
+		key := make([]byte, 10)
 		_, _ = rand.Read(key)
 		tree.Insert(key, value)
 		keys[string(key)] = value
+	}
+	for key, value := range keys {
 		require.Equal(t, value, tree.Get([]byte(key)))
+	}
+
+}
+
+func BenchmarkLookups(b *testing.B) {
+	n := 65_000
+	tree := Tree{}
+	keys := make([][]byte, n)
+	for i := 0; i < n; i++ {
+		key := make([]byte, 8)
+		rand.Read(key)
+		tree.Insert(key, key)
+		keys[i] = key
+	}
+
+	b.ResetTimer()
+
+	b.SetBytes(1)
+	for i := 0; i < b.N; i++ {
+		index := rand.Intn(n)
+		_ = tree.Get(keys[index])
 	}
 }
