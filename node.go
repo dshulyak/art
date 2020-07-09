@@ -2,8 +2,8 @@ package art
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
-	"sort"
 )
 
 const (
@@ -25,14 +25,17 @@ func comparePrefix(k1, k2 []byte, off1, off2 int) int {
 		return 0
 	}
 
+	k1lth -= off1
+	k2lth -= off2
+
 	i := 0
 	for ; i < k1lth && i < k2lth; i++ {
 		if k1[i] != k2[i] {
 			break
 		}
-	}
-	if i > maxPrefixLen {
-		return maxPrefixLen
+		if i == maxPrefixLen {
+			return i
+		}
 	}
 	return i
 }
@@ -265,6 +268,7 @@ type inode interface {
 	leftmost() (byte, node)
 	addChild(byte, node)
 	walk(walkFn, int) bool
+	String() string
 }
 
 type node4 struct {
@@ -274,9 +278,12 @@ type node4 struct {
 }
 
 func (n *node4) index(k byte) int {
-	return sort.Search(int(n.lth), func(i int) bool {
-		return n.keys[i] >= k
-	})
+	for i, b := range n.keys {
+		if k <= b {
+			return i
+		}
+	}
+	return int(n.lth)
 }
 
 func (n *node4) child(k byte) (int, node) {
@@ -324,7 +331,7 @@ func (n *node4) shrink() inode {
 }
 
 func (n *node4) full() bool {
-	return n.childs[3] != nil
+	return n.lth == 4
 }
 
 func (n *node4) grow() inode {
@@ -357,9 +364,14 @@ type node16 struct {
 }
 
 func (n *node16) index(k byte) int {
-	return sort.Search(int(n.lth), func(i int) bool {
-		return n.keys[i] >= k
-	})
+	// binary search is slow then loop 23ns > 16ns per op in worst case of scanning whole array
+	// no reason to use binary search for non-vectorized version
+	for i, b := range n.keys {
+		if k <= b {
+			return i
+		}
+	}
+	return int(n.lth)
 }
 
 func (n *node16) child(k byte) (int, node) {
@@ -399,10 +411,12 @@ func (n *node16) addChild(k byte, child node) {
 }
 
 func (n *node16) grow() inode {
-	nn := &node48{}
+	nn := &node48{
+		lth: n.lth,
+	}
 	copy(nn.childs[:], n.childs[:])
 	for i := range n.childs {
-		nn.keys[n.keys[i]] = i
+		nn.keys[n.keys[i]] = uint16(i) + 1
 	}
 	return nn
 }
@@ -439,14 +453,17 @@ func (n *node16) String() string {
 }
 
 type node48 struct {
-	lth    int
-	keys   [256]int
+	lth    uint8
+	keys   [256]uint16
 	childs [48]node
 }
 
 func (n *node48) child(k byte) (int, node) {
 	idx := n.keys[k]
-	return idx, n.childs[idx]
+	if idx == 0 {
+		return 0, nil
+	}
+	return int(idx) - 1, n.childs[idx-1]
 }
 
 func (n *node48) full() bool {
@@ -454,21 +471,29 @@ func (n *node48) full() bool {
 }
 
 func (n *node48) addChild(k byte, child node) {
-	n.keys[k] = n.lth
+	n.keys[k] = uint16(n.lth + 1)
 	n.childs[n.lth] = child
 	n.lth++
 }
 
 func (n *node48) grow() inode {
-	nn := &node256{}
+	nn := &node256{
+		lth: uint16(n.lth),
+	}
 	for b, i := range n.keys {
-		nn.childs[b] = n.childs[i]
+		if i == 0 {
+			continue
+		}
+		nn.childs[b] = n.childs[i-1]
 	}
 	return nn
 }
 
 func (n *node48) replace(idx int, child node) {
 	n.childs[idx] = child
+	if child == nil {
+		n.lth--
+	}
 }
 
 func (n *node48) min() bool {
@@ -476,7 +501,22 @@ func (n *node48) min() bool {
 }
 
 func (n *node48) shrink() inode {
-	return n
+	nn := &node16{
+		lth: n.lth,
+	}
+	nni := 0
+	for i, index := range n.keys {
+		if index == 0 {
+			continue
+		}
+		child := n.childs[index-1]
+		if child != nil {
+			nn.keys[nni] = byte(i)
+			nn.childs[nni] = child
+			nni++
+		}
+	}
+	return nn
 }
 
 func (n *node48) leftmost() (byte, node) {
@@ -494,8 +534,25 @@ func (n *node48) walk(fn walkFn, depth int) bool {
 	return true
 }
 
+func (n *node48) String() string {
+	var b bytes.Buffer
+	_, _ = b.WriteString("n48[")
+	encoder := hex.NewEncoder(&b)
+	for i, index := range n.keys {
+		if index == 0 {
+			continue
+		}
+		child := n.childs[index-1]
+		if child != nil {
+			_, _ = encoder.Write([]byte{byte(i)})
+		}
+	}
+	_, _ = b.WriteString("]")
+	return b.String()
+}
+
 type node256 struct {
-	lth    int
+	lth    uint16
 	childs [256]node
 }
 
@@ -505,10 +562,13 @@ func (n *node256) child(k byte) (int, node) {
 
 func (n *node256) replace(idx int, child node) {
 	n.childs[byte(idx)] = child
+	if child == nil {
+		n.lth--
+	}
 }
 
 func (n *node256) full() bool {
-	return false
+	return n.lth == 256
 }
 
 func (n *node256) addChild(k byte, child node) {
@@ -517,7 +577,7 @@ func (n *node256) addChild(k byte, child node) {
 }
 
 func (n *node256) grow() inode {
-	panic("node256 won't grow")
+	return nil
 }
 
 func (n *node256) min() bool {
@@ -525,7 +585,19 @@ func (n *node256) min() bool {
 }
 
 func (n *node256) shrink() inode {
-	return n
+	nn := &node48{
+		lth: uint8(n.lth),
+	}
+	var index uint16
+	for i := range n.childs {
+		if n.childs[i] == nil {
+			continue
+		}
+		index++
+		nn.keys[i] = index
+		nn.childs[index-1] = n.childs[i]
+	}
+	return nn
 }
 
 func (n *node256) leftmost() (byte, node) {
@@ -541,4 +613,17 @@ func (n *node256) walk(fn walkFn, depth int) bool {
 		}
 	}
 	return true
+}
+
+func (n *node256) String() string {
+	var b bytes.Buffer
+	_, _ = b.WriteString("n256[")
+	encoder := hex.NewEncoder(&b)
+	for i := range n.childs {
+		if n.childs[i] != nil {
+			_, _ = encoder.Write([]byte{byte(i)})
+		}
+	}
+	_, _ = b.WriteString("]")
+	return b.String()
 }

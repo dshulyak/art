@@ -7,44 +7,125 @@ import (
 )
 
 func TestComparePrefix(t *testing.T) {
-	p1 := []byte{1, 1, 1}
-	p2 := []byte{2, 2, 2}
-	require.Equal(t, 0, comparePrefix(p1, p2, 0, 0))
-
-	p1 = []byte{1, 1, 1, 1, 1, 1, 1, 1}
-	p2 = []byte{1, 2}
-	require.Equal(t, 1, comparePrefix(p1, p2, 0, 0))
-}
-
-func TestInsertLeaf(t *testing.T) {
-	val := 10
-	var n node = leaf{key: []byte{7, 1, 2, 3}, value: val}
-	n = n.insert(leaf{key: []byte{7, 1, 2, 4}}, 0)
-	i, ok := n.(*inner)
-
-	require.True(t, ok)
-	require.Equal(t, []byte{7, 1, 2}, i.prefix[:i.prefixLen])
-
-	rst := n.get([]byte{7, 1, 2, 3}, 0)
-	require.Equal(t, val, rst)
-}
-
-func TestUncompress(t *testing.T) {
-	var n node = &inner{
-		prefix:    [maxPrefixLen]byte{7, 1, 2},
-		prefixLen: 3,
-		node:      &node4{},
+	for _, tc := range []struct {
+		desc       string
+		key1, key2 []byte
+		off1, off2 int
+		rst        int
+	}{
+		{
+			desc: "eq no offset",
+			key1: []byte{1, 2},
+			key2: []byte{1, 2},
+			rst:  2,
+		},
+		{
+			desc: "key 1 shorter",
+			key1: []byte{1, 2},
+			key2: []byte{1, 2, 3},
+			rst:  2,
+		},
+		{
+			desc: "key 2 shorter",
+			key1: []byte{1, 2, 3},
+			key2: []byte{1, 2},
+			rst:  2,
+		},
+		{
+			desc: "unequal",
+			key1: []byte{3, 2, 3},
+			key2: []byte{1, 2},
+		},
+		{
+			desc: "offset longer than key1",
+			key1: []byte{1, 2},
+			key2: []byte{1, 2},
+			off1: 3,
+		},
+		{
+			desc: "offset longer than key2",
+			key1: []byte{1, 2},
+			key2: []byte{1, 2},
+			off2: 3,
+		},
+		{
+			desc: "longer than max prefix",
+			key1: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9},
+			key2: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9},
+			rst:  maxPrefixLen,
+		},
+		{
+			desc: "shorter than max prefix by one",
+			key1: []byte{1, 2, 3, 4, 5, 6, 7, 10},
+			key2: []byte{1, 2, 3, 4, 5, 6, 7, 11},
+			rst:  7,
+		},
+		{
+			desc: "different offsets",
+			key1: []byte{3, 1, 2},
+			key2: []byte{1, 2, 1, 2},
+			off1: 1,
+			off2: 2,
+			rst:  2,
+		},
+	} {
+		tc := tc
+		t.Run(tc.desc, func(t *testing.T) {
+			require.Equal(t, tc.rst, comparePrefix(tc.key1, tc.key2, tc.off1, tc.off2))
+		})
 	}
-	n = n.insert(leaf{key: []byte{7, 3, 3, 7}}, 0)
-	i, ok := n.(*inner)
-	require.True(t, ok)
-	require.Equal(t, i.prefix[:i.prefixLen], []byte{7})
 }
 
-func TestNode4AddChild(t *testing.T) {
-	n := node4{}
-	n.addChild(3, nil)
-	require.Equal(t, []byte{3, 0, 0, 0}, n.keys[:])
-	n.addChild(1, nil)
-	require.Equal(t, []byte{1, 3, 0, 0}, n.keys[:])
+func TestNodeChilds(t *testing.T) {
+	for _, tc := range []struct {
+		desc string
+		node inode
+	}{
+		{"node4", &node4{}},
+		{"node16", &node16{}},
+		{"node48", &node48{}},
+		{"node256", &node256{}},
+	} {
+		tc := tc
+		n := tc.node
+		t.Run(tc.desc, func(t *testing.T) {
+			var k byte
+			order := []node{}
+			expand := func(n inode) {
+				for !n.full() {
+					added := &inner{}
+					order = append(order, added)
+					n.addChild(k, added)
+					k++
+				}
+			}
+			expand(n)
+			testChilds := func(n inode) {
+				for i, added := range order {
+					index, child := n.child(byte(i))
+					require.Equal(t, i, index)
+					require.Equal(t, added, child)
+				}
+			}
+			testChilds(n)
+			if gn := n.grow(); gn != nil {
+				n = gn
+				testChilds(n)
+				expand(n)
+			}
+			reduce := func(n inode) {
+				for !n.min() {
+					k--
+					i, _ := n.child(k)
+					n.replace(i, nil)
+					order = order[:len(order)-1]
+				}
+			}
+			reduce(n)
+			n = n.shrink()
+			if n != nil {
+				testChilds(n)
+			}
+		})
+	}
 }
