@@ -161,7 +161,7 @@ func (n *inner) inherit(prefix [maxPrefixLen]byte, prefixLen int) node {
 	if total <= maxPrefixLen {
 		copy(prefix[prefixLen:], n.prefix[:])
 		n.prefix = prefix
-		n.prefixLen += total
+		n.prefixLen += total - 1
 		return n
 	}
 	// 2. >= max prefix len
