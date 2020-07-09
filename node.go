@@ -82,6 +82,9 @@ func (n *inner) get(key []byte, depth int) ValueType {
 		return n.null.get(key, depth+1)
 	}
 	_, next := n.node.child(key[depth])
+	if next == nil {
+		return nil
+	}
 	return next.get(key, depth+1)
 }
 
@@ -95,9 +98,11 @@ func (n *inner) insert(l leaf, depth int) node {
 		}
 		copy(child.prefix[:], n.prefix[cmp:])
 		n.node = &node4{}
-		n.node.addChild(l.key[depth+cmp], l)
-		n.node.addChild(n.prefix[cmp], child)
 		n.prefixLen = cmp
+
+		n.node.addChild(n.prefix[cmp], child)
+		// TODO add a test for uncompressing path and adding direct prefix node
+		_ = n.insert(l, depth+cmp)
 		return n
 	}
 	depth += n.prefixLen

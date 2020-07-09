@@ -1,9 +1,17 @@
 package art
 
 import (
+	"flag"
+	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+)
+
+var (
+	seed       = flag.Int64("seed", time.Now().Unix(), "seed for the fuzz test")
+	iterations = flag.Int("iter", 1000000, "fuzz iterations")
 )
 
 const (
@@ -324,5 +332,26 @@ func TestTreeDelete(t *testing.T) {
 			}
 			require.Equal(t, tc.pretty, tree.Pretty())
 		})
+	}
+}
+
+func TestFuzzTree(t *testing.T) {
+	if testing.Short() {
+		t.SkipNow()
+	}
+	t.Logf("fuzz with seed %v for %v iterations", *seed, *iterations)
+	rand.Seed(*seed)
+
+	tree := Tree{}
+
+	keys := map[string]int{}
+	for i := 0; i < *iterations; i++ {
+		size := rand.Intn(10)
+		value := rand.Int()
+		key := make([]byte, size)
+		_, _ = rand.Read(key)
+		tree.Insert(key, value)
+		keys[string(key)] = value
+		require.Equal(t, value, tree.Get([]byte(key)))
 	}
 }
