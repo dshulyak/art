@@ -349,7 +349,7 @@ type node16 struct {
 }
 
 func (n *node16) index(k byte) int {
-	// binary search is slow then loop 23ns > 16ns per op in worst case of scanning whole array
+	// binary search is slower then loop 23ns > 16ns per op in worst case of scanning whole array
 	// no reason to use binary search for non-vectorized version
 	for i, b := range n.keys {
 		if k <= b {
@@ -360,12 +360,9 @@ func (n *node16) index(k byte) int {
 }
 
 func (n *node16) child(k byte) (int, node) {
-	idx := n.index(k)
-	if uint8(idx) == n.lth {
+	idx, exist := index(&k, &n.keys)
+	if !exist {
 		return 0, nil
-	}
-	if n.keys[idx] != k {
-		return idx, nil
 	}
 	return idx, n.childs[idx]
 }
