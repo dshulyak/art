@@ -2,6 +2,7 @@ package art
 
 import (
 	"flag"
+	"fmt"
 	"math/rand"
 	"testing"
 	"time"
@@ -150,7 +151,9 @@ func TestTreeInsert(t *testing.T) {
 			}
 			require.Equal(t, tc.pretty, tree.Pretty())
 			for _, insert := range tc.inserts {
-				require.Equal(t, insert.value, tree.Get(insert.key))
+				rst, exist := tree.Get(insert.key)
+				require.True(t, exist)
+				require.Equal(t, insert.value, rst)
 			}
 		})
 	}
@@ -282,22 +285,32 @@ func TestFuzzTree(t *testing.T) {
 		t.SkipNow()
 	}
 	t.Logf("fuzz with seed %v for %v iterations", *seed, *iterations)
-	rand.Seed(*seed)
+	rng := rand.New(rand.NewSource(*seed))
 
 	tree := Tree{}
 
-	keys := map[string]int{}
+	keys := [][]byte{}
+	vals := []int{}
 	for i := 0; i < *iterations; i++ {
-		value := rand.Int()
-		key := make([]byte, 10)
-		_, _ = rand.Read(key)
+		value := rng.Int()
+		key := make([]byte, 6)
+		_, _ = rng.Read(key)
 		tree.Insert(key, value)
-		keys[string(key)] = value
+		keys = append(keys, key)
+		vals = append(vals, value)
 	}
-	for key, value := range keys {
-		require.Equal(t, value, tree.Get([]byte(key)))
+	for i := range keys {
+		rst, exist := tree.Get(keys[i])
+		require.True(t, exist)
+		require.Equal(t, vals[i], rst)
 	}
-
+	for _, key := range keys {
+		tree.Delete([]byte(key))
+		_, exist := tree.Get([]byte(key))
+		require.False(t, exist)
+	}
+	fmt.Println(tree.Pretty())
+	require.True(t, tree.Empty())
 }
 
 func BenchmarkLookups(b *testing.B) {
@@ -316,6 +329,6 @@ func BenchmarkLookups(b *testing.B) {
 	b.SetBytes(1)
 	for i := 0; i < b.N; i++ {
 		index := rand.Intn(n)
-		_ = tree.Get(keys[index])
+		_, _ = tree.Get(keys[index])
 	}
 }

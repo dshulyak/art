@@ -33,9 +33,9 @@ func comparePrefix(k1, k2 []byte, off1, off2 int) int {
 		if k1[i] != k2[i] {
 			break
 		}
-		if i == maxPrefixLen {
-			return i
-		}
+	}
+	if i > maxPrefixLen {
+		return maxPrefixLen
 	}
 	return i
 }
@@ -46,7 +46,7 @@ type walkFn func(node, int) bool
 type node interface {
 	insert(leaf, int) node
 	del([]byte, int) node
-	get([]byte, int) ValueType
+	get([]byte, int) (ValueType, bool)
 	walk(walkFn, int) bool
 	inherit([maxPrefixLen]byte, int) node
 	String() string
@@ -65,15 +65,15 @@ func (n *inner) walk(fn walkFn, depth int) bool {
 	return n.node.walk(fn, depth+n.prefixLen+1)
 }
 
-func (n *inner) get(key []byte, depth int) ValueType {
+func (n *inner) get(key []byte, depth int) (ValueType, bool) {
 	cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
 	if cmp != n.prefixLen {
-		return nil
+		return nil, false
 	}
 	depth += n.prefixLen
 	_, next := n.node.child(key[depth])
 	if next == nil {
-		return nil
+		return nil, false
 	}
 	return next.get(key, depth+1)
 }
@@ -149,7 +149,7 @@ func (n *inner) inherit(prefix [maxPrefixLen]byte, prefixLen int) node {
 	if total <= maxPrefixLen {
 		copy(prefix[prefixLen:], n.prefix[:])
 		n.prefix = prefix
-		n.prefixLen += total - 1
+		n.prefixLen = total
 		return n
 	}
 	// 2. >= max prefix len
@@ -184,11 +184,11 @@ func (l leaf) walk(fn walkFn, depth int) bool {
 	return fn(l, depth)
 }
 
-func (l leaf) get(key []byte, depth int) ValueType {
+func (l leaf) get(key []byte, depth int) (ValueType, bool) {
 	if l.cmp(key) {
-		return l.value
+		return l.value, true
 	}
-	return nil
+	return nil, false
 }
 
 func (l leaf) cmp(other []byte) bool {

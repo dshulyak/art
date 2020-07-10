@@ -19,15 +19,19 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 	t.root = t.root.insert(l, 0)
 }
 
-func (t *Tree) Get(key []byte) ValueType {
+func (t *Tree) Get(key []byte) (ValueType, bool) {
 	if t.root == nil {
-		return nil
+		return nil, false
 	}
 	return t.root.get(key, 0)
 }
 
 func (t *Tree) Delete(key []byte) {
 	t.root = t.root.del(key, 0)
+}
+
+func (t *Tree) Empty() bool {
+	return t.root == nil
 }
 
 func (t *Tree) Pretty() string {
