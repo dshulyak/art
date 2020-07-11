@@ -14,30 +14,19 @@ func comparePrefix(k1, k2 []byte, off1, off2 int) int {
 	k1lth := len(k1)
 	k2lth := len(k2)
 
-	if off1 < k1lth {
-		k1 = k1[off1:]
-	} else {
-		return 0
-	}
-	if off2 < k2lth {
-		k2 = k2[off2:]
-	} else {
-		return 0
-	}
-
-	k1lth -= off1
-	k2lth -= off2
-
-	i := 0
-	for ; i < k1lth && i < k2lth; i++ {
-		if k1[i] != k2[i] {
+	d, i, j := 0, off1, off2
+	for i < k1lth && j < k2lth {
+		if k1[i] != k2[j] {
 			break
 		}
+		i++
+		j++
+		d++
+		if d == maxPrefixLen {
+			return d
+		}
 	}
-	if i > maxPrefixLen {
-		return maxPrefixLen
-	}
-	return i
+	return d
 }
 
 // walkFn should return false if iteration should be terminated.
