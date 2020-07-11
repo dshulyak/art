@@ -60,7 +60,8 @@ func (n *inner) get(key []byte, depth int) (ValueType, bool) {
 		return nil, false
 	}
 	depth += n.prefixLen
-	_, next := n.node.child(key[depth])
+	// NOTE replacing n.node.next with type switch - reduces tree lookup cost by 12ns
+	next := n.node.next(key[depth])
 	if next == nil {
 		return nil, false
 	}
@@ -226,6 +227,9 @@ func (l leaf) String() string {
 // inode is one of the inner nodes concrete representation
 // node4/node16/node48/node256
 type inode interface {
+	// TODO refactor next/child and use one method
+	// child should convert to int
+	next(byte) node
 	child(byte) (int, node)
 	// replace sets node at the index
 	// if node is nil
@@ -269,6 +273,17 @@ func (n *node4) child(k byte) (int, node) {
 		return idx, nil
 	}
 	return idx, n.childs[idx]
+}
+
+func (n *node4) next(k byte) node {
+	idx := n.index(k)
+	if uint8(idx) == n.lth {
+		return nil
+	}
+	if n.keys[idx] != k {
+		return nil
+	}
+	return n.childs[idx]
 }
 
 func (n *node4) replace(idx int, child node) {
@@ -356,6 +371,14 @@ func (n *node16) child(k byte) (int, node) {
 	return idx, n.childs[idx]
 }
 
+func (n *node16) next(k byte) node {
+	idx, exist := index(&k, &n.keys)
+	if !exist {
+		return nil
+	}
+	return n.childs[idx]
+}
+
 func (n *node16) replace(idx int, child node) {
 	if child == nil {
 		copy(n.keys[idx:], n.keys[idx+1:])
@@ -435,6 +458,14 @@ func (n *node48) child(k byte) (int, node) {
 		return 0, nil
 	}
 	return int(idx) - 1, n.childs[idx-1]
+}
+
+func (n *node48) next(k byte) node {
+	idx := n.keys[k]
+	if idx == 0 {
+		return nil
+	}
+	return n.childs[idx-1]
 }
 
 func (n *node48) full() bool {
@@ -529,6 +560,10 @@ type node256 struct {
 
 func (n *node256) child(k byte) (int, node) {
 	return int(k), n.childs[k]
+}
+
+func (n *node256) next(k byte) node {
+	return n.childs[k]
 }
 
 func (n *node256) replace(idx int, child node) {

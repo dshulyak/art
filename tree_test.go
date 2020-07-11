@@ -314,22 +314,25 @@ func TestFuzzTree(t *testing.T) {
 }
 
 func BenchmarkLookups(b *testing.B) {
-	rand.Seed(0)
+	//rand.Seed(0)
 	n := 65_000
 	tree := Tree{}
 	keys := make([][]byte, n)
 	for i := 0; i < n; i++ {
-		key := make([]byte, 8)
+		key := make([]byte, 20)
 		rand.Read(key)
 		tree.Insert(key, key)
 		keys[i] = key
 	}
 
 	b.ResetTimer()
-
 	b.SetBytes(1)
+	idx := 0
 	for i := 0; i < b.N; i++ {
-		index := rand.Intn(n)
-		_, _ = tree.Get(keys[index])
+		if idx >= len(keys) {
+			idx = 0
+		}
+		_, _ = tree.Get(keys[idx])
+		idx++
 	}
 }
