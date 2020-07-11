@@ -314,6 +314,7 @@ func TestFuzzTree(t *testing.T) {
 }
 
 func BenchmarkLookups(b *testing.B) {
+	rand.Seed(0)
 	n := 65_000
 	tree := Tree{}
 	keys := make([][]byte, n)
