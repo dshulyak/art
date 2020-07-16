@@ -108,26 +108,25 @@ func (n *inner) get(key []byte, depth int) (ValueType, bool) {
 }
 
 // insert
-// TODO(dshulyak) no need to return pointer, leaf must be handled specifically anyway
+// TODO(dshulyak) no need to return pointer, the only case when we need to return pointer
+// if when leaf is changed
 func (n *inner) insert(l leaf, depth int) node {
-	// NOTE(dshulyak) in this implementation we don't need to hold parent lock
-	// in the reference implementation parent needs to be updated with a different pointer, e.g. if:
+	// NOTE(dshulyak) in this implementation we don't need to hold parent lock.
+	// in the reference implementation parent needs to be updated with a different pointer if:
 	// 1. node changed size
-	// 2. prefix is split
-	// 3. leaf path uncompressed
+	// 2. prefix needs to be splitted
+	// 3. path to leaf is uncompressed
 	// 1 and 2 doesn't lead to change of pointer address in this implementation
-	// 3 is handled by an explicit check that the next node is leaf and obtaining write lock
+	// 3 is handled by an explicit check that the next node is leaf and obtaining write lock before updating leaf
 	var (
 		version uint64
 		restart = true
 	)
-
 	for restart {
 		version, restart = n.lock.RLock()
 		if restart {
 			continue
 		}
-
 		cmp := comparePrefix(n.prefix[:n.prefixLen], l.key, 0, depth)
 		if cmp != n.prefixLen {
 			restart = n.lock.Upgrade(version, nil)
@@ -138,7 +137,7 @@ func (n *inner) insert(l leaf, depth int) node {
 				prefixLen: n.prefixLen - cmp - 1,
 				node:      n.node,
 			}
-			copy(child.prefix[:], n.prefix[child.prefixLen:])
+			copy(child.prefix[:], n.prefix[cmp+1:])
 			n.node = &node4{}
 			n.node.addChild(l.key[depth+cmp], l)
 			n.node.addChild(n.prefix[cmp], child)
@@ -147,8 +146,8 @@ func (n *inner) insert(l leaf, depth int) node {
 			return n
 		}
 
-		depth += n.prefixLen
-		idx, next := n.node.child(l.key[depth])
+		nextDepth := depth + n.prefixLen
+		idx, next := n.node.child(l.key[nextDepth])
 		restart = n.lock.Check(version)
 		if restart {
 			continue
@@ -162,7 +161,7 @@ func (n *inner) insert(l leaf, depth int) node {
 			if n.node.full() {
 				n.node = n.node.grow()
 			}
-			n.node.addChild(l.key[depth], l)
+			n.node.addChild(l.key[nextDepth], l)
 			n.lock.Unlock()
 			return n
 		}
@@ -172,12 +171,15 @@ func (n *inner) insert(l leaf, depth int) node {
 			if restart {
 				continue
 			}
-			defer n.lock.Unlock()
-			n.node.replace(idx, next.insert(l, depth+1))
+			n.node.replace(idx, next.insert(l, nextDepth+1))
+			n.lock.Unlock()
 			return n
 		}
-
-		_ = next.insert(l, depth+1)
+		restart = n.lock.RUnlock(version, nil)
+		if restart {
+			continue
+		}
+		_ = next.insert(l, nextDepth+1)
 	}
 	return n
 }

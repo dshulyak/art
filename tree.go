@@ -7,23 +7,68 @@ import (
 type ValueType interface{}
 
 type Tree struct {
+	lock olock
 	root node
 }
 
 func (t *Tree) Insert(key []byte, value ValueType) {
-	l := leaf{key: key, value: value}
-	if t.root == nil {
-		t.root = l
-		return
+	var (
+		restart = true
+		version uint64
+	)
+	for restart {
+		version, restart = t.lock.RLock()
+		if restart {
+			continue
+		}
+		l := leaf{key: key, value: value}
+		if t.root == nil {
+			restart = t.lock.Upgrade(version, nil)
+			if restart {
+				continue
+			}
+			t.root = l
+			t.lock.Unlock()
+			return
+		}
+		if t.root.isLeaf() {
+			restart = t.lock.Upgrade(version, nil)
+			if restart {
+				continue
+			}
+			t.root = t.root.insert(l, 0)
+			t.lock.Unlock()
+			return
+		}
+		restart = t.lock.RUnlock(version, nil)
+		if restart {
+			continue
+		}
+		t.root = t.root.insert(l, 0)
 	}
-	t.root = t.root.insert(l, 0)
 }
 
 func (t *Tree) Get(key []byte) (ValueType, bool) {
-	if t.root == nil {
-		return nil, false
+	var (
+		version uint64
+		restart = true
+	)
+	for restart {
+		version, restart = t.lock.RLock()
+		if restart {
+			continue
+		}
+		root := t.root
+		restart = t.lock.RUnlock(version, nil)
+		if restart {
+			continue
+		}
+		if root == nil {
+			return nil, false
+		}
+		return root.get(key, 0)
 	}
-	return t.root.get(key, 0)
+	panic("not reachable")
 }
 
 func (t *Tree) Delete(key []byte) {

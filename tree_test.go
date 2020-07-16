@@ -3,9 +3,11 @@ package art
 import (
 	"flag"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -109,6 +111,19 @@ func TestTreeInsert(t *testing.T) {
 				{[]byte{0, 1}, 1},
 				{[]byte{0, 2}, 2},
 				{[]byte{1, 2}, 3},
+			},
+		},
+		{
+			desc: "uncompress path 2",
+			pretty: `inner[01]n4[0102]
+..inner[02]n4[0304]
+....leaf[01010203]
+....leaf[01010204]
+..leaf[01020304]`,
+			inserts: []kv{
+				{[]byte{1, 1, 2, 4}, 1},
+				{[]byte{1, 1, 2, 3}, 2},
+				{[]byte{1, 2, 3, 4}, 3},
 			},
 		},
 		{
@@ -332,5 +347,34 @@ func BenchmarkLookups(b *testing.B) {
 		}
 		_, _ = tree.Get(keys[idx])
 		idx++
+	}
+}
+
+func TestTreeConcurrentInsert(t *testing.T) {
+	var tree Tree
+	keys := []string{
+		"aabd",
+		"aabe",
+		"abcd",
+		"aedd",
+		"aqdd",
+	}
+	updates := 100
+	var wg sync.WaitGroup
+	for _, key := range keys {
+		wg.Add(1)
+		go func(key string) {
+			for i := 1; i <= updates; i++ {
+				tree.Insert([]byte(key), i)
+			}
+			wg.Done()
+		}(key)
+	}
+	wg.Wait()
+
+	for _, key := range keys {
+		rst, exist := tree.Get([]byte(key))
+		assert.True(t, exist, "key '%v' should exist", key)
+		assert.Equal(t, updates, rst)
 	}
 }
