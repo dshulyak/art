@@ -34,7 +34,13 @@ func (t *Tree) Empty() bool {
 	return t.root == nil
 }
 
-func (t *Tree) Pretty() string {
+// testView returns tree structure in the format used for tests.
+// Must preserve:
+// - depth
+// - prefix of the inner nodes
+// - keys of the innner nodes
+// - (optionally) keys of the leafs
+func (t *Tree) testView() string {
 	if t.root == nil {
 		return ""
 	}

@@ -2,7 +2,6 @@ package art
 
 import (
 	"flag"
-	"fmt"
 	"math/rand"
 	"testing"
 	"time"
@@ -149,7 +148,7 @@ func TestTreeInsert(t *testing.T) {
 			for _, insert := range tc.inserts {
 				tree.Insert(insert.key, insert.value)
 			}
-			require.Equal(t, tc.pretty, tree.Pretty())
+			require.Equal(t, tc.pretty, tree.testView())
 			for _, insert := range tc.inserts {
 				rst, exist := tree.Get(insert.key)
 				require.True(t, exist)
@@ -275,7 +274,7 @@ func TestTreeDelete(t *testing.T) {
 					tree.Delete(operation.key)
 				}
 			}
-			require.Equal(t, tc.pretty, tree.Pretty())
+			require.Equal(t, tc.pretty, tree.testView())
 		})
 	}
 }
@@ -309,7 +308,6 @@ func TestFuzzTree(t *testing.T) {
 		_, exist := tree.Get([]byte(key))
 		require.False(t, exist)
 	}
-	fmt.Println(tree.Pretty())
 	require.True(t, tree.Empty())
 }
 

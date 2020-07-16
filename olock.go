@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 )
 
-// olock is a implemention of Optimistic Lock.
+// olock is a implemention of an Optimistic Lock.
 // As descibed in https://15721.courses.cs.cmu.edu/spring2017/papers/08-oltpindexes2/leis-damon2016.pd// Appendix A: Implementation of Optimistic Locks
 //
 // The two least significant bits indicate if the node is obsolete or if the node is locked,
@@ -16,15 +16,15 @@ type olock uint64
 
 // RLock waits for node to be unlocked and returns current version, possibly obsolete.
 // If version is obsolete user must discard used object and restart execution.
-// Read lock is a current value of uint64, if this value gets outdated at the time of RUnlock
-// - read will need to be restarted.
+// Read lock is a current version value, if this value gets outdated at the time of RUnlock
+// read will need to be restarted.
 func (ol *olock) RLock() (uint64, bool) {
 	version := ol.waitUnlocked()
 	return version, isObsolete(version)
 }
 
 // RUnlock compares read lock with current value of the olock, in case if
-// value got changed - RUnlock will notify caller that operation needs to be restarted.
+// value got changed - RUnlock will return true.
 func (ol *olock) RUnlock(version uint64, locked *olock) bool {
 	if atomic.LoadUint64((*uint64)(ol)) != version {
 		if locked != nil {

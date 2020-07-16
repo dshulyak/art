@@ -38,13 +38,20 @@ type node interface {
 	get([]byte, int) (ValueType, bool)
 	walk(walkFn, int) bool
 	inherit([maxPrefixLen]byte, int) node
+	isLeaf() bool
 	String() string
 }
 
 type inner struct {
+	lock olock
+
 	prefix    [maxPrefixLen]byte
 	prefixLen int
 	node      inode
+}
+
+func (n *inner) isLeaf() bool {
+	return false
 }
 
 func (n *inner) walk(fn walkFn, depth int) bool {
@@ -55,44 +62,122 @@ func (n *inner) walk(fn walkFn, depth int) bool {
 }
 
 func (n *inner) get(key []byte, depth int) (ValueType, bool) {
-	cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
-	if cmp != n.prefixLen {
-		return nil, false
+	var (
+		version uint64
+		restart = true
+	)
+	for restart {
+		version, restart = n.lock.RLock()
+		if restart {
+			continue
+		}
+		cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
+		if cmp != n.prefixLen {
+			restart = n.lock.RUnlock(version, nil)
+			if restart {
+				continue
+			}
+			return nil, false
+		}
+
+		depth += n.prefixLen
+		next := n.node.next(key[depth])
+
+		restart = n.lock.Check(version)
+		if restart {
+			continue
+		}
+		if next == nil {
+			restart = n.lock.RUnlock(version, nil)
+			if restart {
+				continue
+			}
+			return nil, false
+		}
+		if next.isLeaf() {
+			value, found := next.get(key, depth+1)
+			restart = n.lock.RUnlock(version, nil)
+			if restart {
+				continue
+			}
+			return value, found
+		}
+		return next.get(key, depth+1)
 	}
-	depth += n.prefixLen
-	// NOTE replacing n.node.next with type switch - reduces tree lookup cost by 12ns
-	next := n.node.next(key[depth])
-	if next == nil {
-		return nil, false
-	}
-	return next.get(key, depth+1)
+	panic("not reachable")
 }
 
+// insert
+// TODO(dshulyak) no need to return pointer, leaf must be handled specifically anyway
 func (n *inner) insert(l leaf, depth int) node {
-	// uncompress path
-	cmp := comparePrefix(n.prefix[:n.prefixLen], l.key, 0, depth)
-	if cmp != n.prefixLen {
-		child := &inner{
-			prefixLen: n.prefixLen - cmp - 1,
-			node:      n.node,
+	// NOTE(dshulyak) in this implementation we don't need to hold parent lock
+	// in the reference implementation parent needs to be updated with a different pointer, e.g. if:
+	// 1. node changed size
+	// 2. prefix is split
+	// 3. leaf path uncompressed
+	// 1 and 2 doesn't lead to change of pointer address in this implementation
+	// 3 is handled by an explicit check that the next node is leaf and obtaining write lock
+	var (
+		version uint64
+		restart = true
+	)
+
+	for restart {
+		version, restart = n.lock.RLock()
+		if restart {
+			continue
 		}
-		copy(child.prefix[:], n.prefix[child.prefixLen:])
-		n.node = &node4{}
-		n.node.addChild(l.key[depth+cmp], l)
-		n.node.addChild(n.prefix[cmp], child)
-		n.prefixLen = cmp
-		return n
-	}
-	depth += n.prefixLen
-	// normal insertion flow
-	idx, next := n.node.child(l.key[depth])
-	if next != nil {
-		n.node.replace(idx, next.insert(l, depth+1))
-	} else {
-		if n.node.full() {
-			n.node = n.node.grow()
+
+		cmp := comparePrefix(n.prefix[:n.prefixLen], l.key, 0, depth)
+		if cmp != n.prefixLen {
+			restart = n.lock.Upgrade(version, nil)
+			if restart {
+				continue
+			}
+			child := &inner{
+				prefixLen: n.prefixLen - cmp - 1,
+				node:      n.node,
+			}
+			copy(child.prefix[:], n.prefix[child.prefixLen:])
+			n.node = &node4{}
+			n.node.addChild(l.key[depth+cmp], l)
+			n.node.addChild(n.prefix[cmp], child)
+			n.prefixLen = cmp
+			n.lock.Unlock()
+			return n
 		}
-		n.node.addChild(l.key[depth], l)
+
+		depth += n.prefixLen
+		idx, next := n.node.child(l.key[depth])
+		restart = n.lock.Check(version)
+		if restart {
+			continue
+		}
+
+		if next == nil {
+			restart = n.lock.Upgrade(version, nil)
+			if restart {
+				continue
+			}
+			if n.node.full() {
+				n.node = n.node.grow()
+			}
+			n.node.addChild(l.key[depth], l)
+			n.lock.Unlock()
+			return n
+		}
+
+		if next.isLeaf() {
+			restart = n.lock.Upgrade(version, nil)
+			if restart {
+				continue
+			}
+			defer n.lock.Unlock()
+			n.node.replace(idx, next.insert(l, depth+1))
+			return n
+		}
+
+		_ = next.insert(l, depth+1)
 	}
 	return n
 }
@@ -105,8 +190,8 @@ func (n *inner) del(key []byte, depth int) node {
 	if cmp != n.prefixLen {
 		return n
 	}
-	depth += n.prefixLen
 
+	depth += n.prefixLen
 	idx, next := n.node.child(key[depth])
 	if next == nil {
 		return n
@@ -127,6 +212,10 @@ func (n *inner) del(key []byte, depth int) node {
 		leftb, left := n.node.leftmost()
 		n.prefix[n.prefixLen] = leftb
 		n.prefixLen++
+		// acquire parent lock
+		// parentReplace(left.inherit(n.prefix, n.prefixLen), parentIdx)
+		// parent.Unlock
+		// node.UnlockObsolete
 		return left.inherit(n.prefix, n.prefixLen)
 	}
 	return n
@@ -168,6 +257,10 @@ func (n *inner) String() string {
 type leaf struct {
 	key   []byte
 	value ValueType
+}
+
+func (l leaf) isLeaf() bool {
+	return true
 }
 
 func (l leaf) walk(fn walkFn, depth int) bool {
