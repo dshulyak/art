@@ -378,3 +378,33 @@ func TestTreeConcurrentInsert(t *testing.T) {
 		assert.Equal(t, updates, rst)
 	}
 }
+
+func TestTreeConcurrentDelete(t *testing.T) {
+	cnt := 100000
+	factor := 16
+	keys := [][]byte{}
+	var tree Tree
+	for i := 0; i < cnt; i++ {
+		key := make([]byte, 10)
+		rand.Read(key)
+		tree.Insert(key, key)
+		keys = append(keys, key)
+	}
+	var wg sync.WaitGroup
+	keyc := make(chan []byte, factor)
+	for i := 0; i < factor; i++ {
+		wg.Add(1)
+		go func() {
+			for key := range keyc {
+				tree.Delete(key)
+			}
+			wg.Done()
+		}()
+	}
+	for _, key := range keys {
+		keyc <- key
+	}
+	close(keyc)
+	wg.Wait()
+	require.True(t, tree.Empty())
+}

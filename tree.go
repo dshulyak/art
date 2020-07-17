@@ -34,15 +34,11 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 			if restart {
 				continue
 			}
-			t.root, _ = t.root.insert(l, 0)
+			t.root, _ = t.root.insert(l, 0, &t.lock, version)
 			t.lock.Unlock()
 			return
 		}
-		restart = t.lock.RUnlock(version, nil)
-		if restart {
-			continue
-		}
-		root, restart = t.root.insert(l, 0)
+		root, restart = t.root.insert(l, 0, &t.lock, version)
 		if restart {
 			continue
 		}
@@ -67,7 +63,7 @@ func (t *Tree) Get(key []byte) (val ValueType, found bool) {
 		if root == nil {
 			return
 		}
-		val, found, restart = root.get(key, 0)
+		val, found, restart = root.get(key, 0, &t.lock, version)
 		if restart {
 			continue
 		}
