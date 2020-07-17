@@ -3,6 +3,7 @@ package art
 import (
 	"flag"
 	"math/rand"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -327,12 +328,19 @@ func TestFuzzTree(t *testing.T) {
 }
 
 func BenchmarkLookups(b *testing.B) {
-	//rand.Seed(0)
-	n := 65_000
+	for _, size := range []int{1_000, 10_000, 100_000, 1_000_000, 10_000_000} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			benchmarkLookups(b, size)
+		})
+	}
+}
+
+func benchmarkLookups(b *testing.B, n int) {
+	rand.Seed(0)
 	tree := Tree{}
 	keys := make([][]byte, n)
 	for i := 0; i < n; i++ {
-		key := make([]byte, 20)
+		key := make([]byte, 24)
 		rand.Read(key)
 		tree.Insert(key, key)
 		keys[i] = key
@@ -350,7 +358,11 @@ func BenchmarkLookups(b *testing.B) {
 	}
 }
 
+var ballast []byte
+
 func BenchmarkInserts(b *testing.B) {
+	ballast = make([]byte, 1<<30)
+	rand.Seed(0)
 	n := 65_000
 	keys := make([][]byte, n)
 	for i := 0; i < n; i++ {
