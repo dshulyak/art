@@ -33,9 +33,9 @@ func comparePrefix(k1, k2 []byte, off1, off2 int) int {
 type walkFn func(node, int) bool
 
 type node interface {
-	insert(leaf, int) node
-	del([]byte, int) node
-	get([]byte, int) (ValueType, bool)
+	insert(leaf, int) (node, bool)
+	del([]byte, int, *olock, uint64, func(node)) bool
+	get([]byte, int) (ValueType, bool, bool)
 	walk(walkFn, int) bool
 	inherit([maxPrefixLen]byte, int) node
 	isLeaf() bool
@@ -61,15 +61,15 @@ func (n *inner) walk(fn walkFn, depth int) bool {
 	return n.node.walk(fn, depth+n.prefixLen+1)
 }
 
-func (n *inner) get(key []byte, depth int) (ValueType, bool) {
+func (n *inner) get(key []byte, depth int) (value ValueType, found bool, obsolete bool) {
 	var (
 		version uint64
 		restart = true
 	)
 	for restart {
-		version, restart = n.lock.RLock()
-		if restart {
-			continue
+		version, obsolete = n.lock.RLock()
+		if obsolete {
+			return nil, false, true
 		}
 		cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
 		if cmp != n.prefixLen {
@@ -77,40 +77,44 @@ func (n *inner) get(key []byte, depth int) (ValueType, bool) {
 			if restart {
 				continue
 			}
-			return nil, false
+			return nil, false, false
 		}
 
-		depth += n.prefixLen
-		next := n.node.next(key[depth])
+		nextDepth := depth + n.prefixLen
+		next := n.node.next(key[nextDepth])
 
-		restart = n.lock.Check(version)
-		if restart {
-			continue
-		}
 		if next == nil {
 			restart = n.lock.RUnlock(version, nil)
 			if restart {
 				continue
 			}
-			return nil, false
+			return nil, false, false
 		}
 		if next.isLeaf() {
-			value, found := next.get(key, depth+1)
+			value, found, _ = next.get(key, nextDepth+1)
 			restart = n.lock.RUnlock(version, nil)
 			if restart {
 				continue
 			}
-			return value, found
+			return value, found, false
 		}
-		return next.get(key, depth+1)
+		restart = n.lock.RUnlock(version, nil)
+		if restart {
+			continue
+		}
+		value, found, restart = next.get(key, nextDepth+1)
+		if restart {
+			continue
+		}
+		return value, found, false
 	}
-	panic("not reachable")
+	panic("unreachable")
 }
 
 // insert
 // TODO(dshulyak) no need to return pointer, the only case when we need to return pointer
-// if when leaf is changed
-func (n *inner) insert(l leaf, depth int) node {
+// is when leaf has changed
+func (n *inner) insert(l leaf, depth int) (node, bool) {
 	// NOTE(dshulyak) in this implementation we don't need to hold parent lock.
 	// in the reference implementation parent needs to be updated with a different pointer if:
 	// 1. node changed size
@@ -119,13 +123,14 @@ func (n *inner) insert(l leaf, depth int) node {
 	// 1 and 2 doesn't lead to change of pointer address in this implementation
 	// 3 is handled by an explicit check that the next node is leaf and obtaining write lock before updating leaf
 	var (
-		version uint64
-		restart = true
+		version  uint64
+		restart  = true
+		obsolete bool
 	)
 	for restart {
-		version, restart = n.lock.RLock()
-		if restart {
-			continue
+		version, obsolete = n.lock.RLock()
+		if obsolete {
+			return n, true
 		}
 		cmp := comparePrefix(n.prefix[:n.prefixLen], l.key, 0, depth)
 		if cmp != n.prefixLen {
@@ -143,15 +148,11 @@ func (n *inner) insert(l leaf, depth int) node {
 			n.node.addChild(n.prefix[cmp], child)
 			n.prefixLen = cmp
 			n.lock.Unlock()
-			return n
+			return n, false
 		}
 
 		nextDepth := depth + n.prefixLen
 		idx, next := n.node.child(l.key[nextDepth])
-		restart = n.lock.Check(version)
-		if restart {
-			continue
-		}
 
 		if next == nil {
 			restart = n.lock.Upgrade(version, nil)
@@ -163,7 +164,7 @@ func (n *inner) insert(l leaf, depth int) node {
 			}
 			n.node.addChild(l.key[nextDepth], l)
 			n.lock.Unlock()
-			return n
+			return n, false
 		}
 
 		if next.isLeaf() {
@@ -171,56 +172,123 @@ func (n *inner) insert(l leaf, depth int) node {
 			if restart {
 				continue
 			}
-			n.node.replace(idx, next.insert(l, nextDepth+1))
+			replacement, _ := next.insert(l, nextDepth+1)
+			n.node.replace(idx, replacement)
 			n.lock.Unlock()
-			return n
+			return n, false
 		}
+
 		restart = n.lock.RUnlock(version, nil)
 		if restart {
 			continue
 		}
-		_ = next.insert(l, nextDepth+1)
+		_, restart = next.insert(l, nextDepth+1)
+		if restart {
+			continue
+		}
+		return n, false
 	}
-	return n
+	panic("unreachable")
 }
 
 // del deletes the node with key and returns pointer for the parent to update himself.
-// address of the pointer will be changed when nodes are merged and path is compressed
-// or inner nodes are completely collapsed and pointer will refer to leaf
-func (n *inner) del(key []byte, depth int) node {
-	cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
-	if cmp != n.prefixLen {
-		return n
-	}
+// pointer may change if path is comressed:
+// - either completely, pointer to the leaf will be returned
+// - partially, e.g. prefixLen will be increased and prefixes merged
+func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, replace func(node)) bool {
+	var (
+		version  uint64
+		restart  = true
+		obsolete bool
+	)
+	for restart {
+		version, obsolete = n.lock.RLock()
+		if obsolete {
+			return true
+		}
 
-	depth += n.prefixLen
-	idx, next := n.node.child(key[depth])
-	if next == nil {
-		return n
-	}
-	n.node.replace(idx, next.del(key, depth+1))
-	if n.node.min() {
-		nn := n.node.shrink()
-		// will be false only for node4
-		if nn != nil {
-			n.node = nn
-			return n
+		cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
+		if cmp != n.prefixLen {
+			// key is not found, check for concurrent writes and exit
+			restart = n.lock.RUnlock(version, nil)
+			if restart {
+				continue
+			}
+			return false
 		}
-		// inner nodes with max prefix should be kept even if they have 1 child
-		if n.prefixLen == maxPrefixLen {
-			return n
+
+		nextDepth := depth + n.prefixLen
+		idx, next := n.node.child(key[nextDepth])
+
+		if next == nil {
+			// key is not found, check for concurrent writes and exit
+			restart = n.lock.RUnlock(version, nil)
+			if restart {
+				continue
+			}
+			return false
 		}
-		// for node4 extend prefix or collapse inner nodes
-		leftb, left := n.node.leftmost()
-		n.prefix[n.prefixLen] = leftb
-		n.prefixLen++
-		// acquire parent lock
-		// parentReplace(left.inherit(n.prefix, n.prefixLen), parentIdx)
-		// parent.Unlock
-		// node.UnlockObsolete
-		return left.inherit(n.prefix, n.prefixLen)
+
+		if l, isLeaf := next.(leaf); isLeaf && l.cmp(key) {
+			_, isNode4 := n.node.(*node4)
+			min := n.node.min()
+			if isNode4 && min && n.prefixLen < maxPrefixLen {
+				// update parent pointer. current node will be collapsed.
+				restart = parent.Upgrade(parentVersion, nil)
+				if restart {
+					continue
+				}
+				restart = n.lock.Upgrade(version, parent)
+				if restart {
+					continue
+				}
+
+				n.node.replace(idx, nil)
+
+				leftb, left := n.node.leftmost()
+				n.prefix[n.prefixLen] = leftb
+				n.prefixLen++
+				replace(left.inherit(n.prefix, n.prefixLen))
+
+				n.lock.UnlockObsolete()
+				parent.Unlock()
+				return false
+			}
+			// local change. parent lock won't be required
+			restart = n.lock.Upgrade(version, nil)
+			if restart {
+				continue
+			}
+			n.node.replace(idx, nil)
+			if min && !isNode4 {
+				n.node = n.node.shrink()
+			}
+			n.lock.Unlock()
+			return false
+		} else if isLeaf {
+			// key is not found. false-positive lookup due to compression.
+			// check for concurrent writes and exit
+			restart = n.lock.RUnlock(version, nil)
+			if restart {
+				continue
+			}
+			return false
+		}
+
+		restart = parent.RUnlock(parentVersion, nil)
+		if restart {
+			continue
+		}
+
+		restart = next.del(key, nextDepth+1, &n.lock, version, func(rn node) {
+			n.node.replace(idx, rn)
+		})
+		if restart {
+			continue
+		}
+		return false
 	}
-	return n
+	panic("unreachable")
 }
 
 func (n *inner) inherit(prefix [maxPrefixLen]byte, prefixLen int) node {
@@ -269,11 +337,11 @@ func (l leaf) walk(fn walkFn, depth int) bool {
 	return fn(l, depth)
 }
 
-func (l leaf) get(key []byte, depth int) (ValueType, bool) {
+func (l leaf) get(key []byte, depth int) (ValueType, bool, bool) {
 	if l.cmp(key) {
-		return l.value, true
+		return l.value, true, false
 	}
-	return nil, false
+	return nil, false, false
 }
 
 func (l leaf) cmp(other []byte) bool {
@@ -282,9 +350,9 @@ func (l leaf) cmp(other []byte) bool {
 
 // insert updates leaf if key matches previous leaf or performs expansion if needed.
 // expansion creates node4 and adds two leafs as childs.
-func (l leaf) insert(other leaf, depth int) node {
+func (l leaf) insert(other leaf, depth int) (node, bool) {
 	if other.cmp(l.key) {
-		return other
+		return other, false
 	}
 	cmp := comparePrefix(l.key, other.key, depth, depth)
 	nn := &inner{
@@ -299,16 +367,13 @@ func (l leaf) insert(other leaf, depth int) node {
 	// max prefix length is 8 byte, if common prefix longer than
 	// that then multiple inner nodes will be inserted
 	// see `long keys` test
-	_ = nn.insert(other, depth)
-	_ = nn.insert(l, depth)
-	return nn
+	_, _ = nn.insert(other, depth)
+	_, _ = nn.insert(l, depth)
+	return nn, false
 }
 
-func (l leaf) del(key []byte, depth int) node {
-	if l.cmp(key) {
-		return nil
-	}
-	return l
+func (l leaf) del([]byte, int, *olock, uint64, func(node)) bool {
+	panic("not needed")
 }
 
 func (l leaf) inherit([maxPrefixLen]byte, int) node {
@@ -407,11 +472,11 @@ func (n *node4) addChild(k byte, child node) {
 }
 
 func (n *node4) min() bool {
-	return n.lth <= 1
+	return n.lth <= 2
 }
 
 func (n *node4) shrink() inode {
-	return nil
+	panic("can't shrink node4")
 }
 
 func (n *node4) full() bool {
@@ -511,7 +576,7 @@ func (n *node16) grow() inode {
 }
 
 func (n *node16) min() bool {
-	return n.lth <= 4
+	return n.lth <= 5
 }
 
 func (n *node16) shrink() inode {
@@ -594,7 +659,7 @@ func (n *node48) replace(idx int, child node) {
 }
 
 func (n *node48) min() bool {
-	return n.lth <= 16
+	return n.lth <= 17
 }
 
 func (n *node48) shrink() inode {
@@ -682,7 +747,7 @@ func (n *node256) grow() inode {
 }
 
 func (n *node256) min() bool {
-	return n.lth <= 48
+	return n.lth <= 49
 }
 
 func (n *node256) shrink() inode {

@@ -114,11 +114,15 @@ func TestNodeChilds(t *testing.T) {
 				expand(n)
 			}
 			reduce := func(n inode) {
-				for !n.min() {
+				for {
+					min := n.min()
 					k--
 					i, _ := n.child(k)
 					n.replace(i, nil)
 					order = order[:len(order)-1]
+					if min {
+						break
+					}
 				}
 			}
 			reduce(n)

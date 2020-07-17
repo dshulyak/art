@@ -15,12 +15,10 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 	var (
 		restart = true
 		version uint64
+		root    node
 	)
 	for restart {
 		version, restart = t.lock.RLock()
-		if restart {
-			continue
-		}
 		l := leaf{key: key, value: value}
 		if t.root == nil {
 			restart = t.lock.Upgrade(version, nil)
@@ -36,7 +34,7 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 			if restart {
 				continue
 			}
-			t.root = t.root.insert(l, 0)
+			t.root, _ = t.root.insert(l, 0)
 			t.lock.Unlock()
 			return
 		}
@@ -44,35 +42,73 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 		if restart {
 			continue
 		}
-		t.root = t.root.insert(l, 0)
+		root, restart = t.root.insert(l, 0)
+		if restart {
+			continue
+		}
+		t.root = root
+		return
 	}
+	panic("unreachable")
 }
 
-func (t *Tree) Get(key []byte) (ValueType, bool) {
+func (t *Tree) Get(key []byte) (val ValueType, found bool) {
 	var (
 		version uint64
 		restart = true
 	)
 	for restart {
-		version, restart = t.lock.RLock()
-		if restart {
-			continue
-		}
+		version, _ = t.lock.RLock()
 		root := t.root
 		restart = t.lock.RUnlock(version, nil)
 		if restart {
 			continue
 		}
 		if root == nil {
-			return nil, false
+			return
 		}
-		return root.get(key, 0)
+		val, found, restart = root.get(key, 0)
+		if restart {
+			continue
+		}
+		return
 	}
-	panic("not reachable")
+	panic("unreachable")
 }
 
 func (t *Tree) Delete(key []byte) {
-	t.root = t.root.del(key, 0)
+	var (
+		version uint64
+		restart = true
+	)
+	for restart {
+		version, _ = t.lock.RLock()
+		l, isLeaf := t.root.(leaf)
+		if isLeaf && l.cmp(key) {
+			restart = t.lock.Upgrade(version, nil)
+			if restart {
+				continue
+			}
+			t.root = nil
+			t.lock.Unlock()
+			return
+		} else if isLeaf {
+			restart = t.lock.RUnlock(version, nil)
+			if restart {
+				continue
+			}
+			return
+		}
+
+		restart = t.root.del(key, 0, &t.lock, version, func(rn node) {
+			t.root = rn
+		})
+		if restart {
+			continue
+		}
+		return
+	}
+	panic("unreachable")
 }
 
 func (t *Tree) Empty() bool {
