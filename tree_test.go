@@ -350,6 +350,25 @@ func BenchmarkLookups(b *testing.B) {
 	}
 }
 
+func BenchmarkInserts(b *testing.B) {
+	n := 65_000
+	keys := make([][]byte, n)
+	for i := 0; i < n; i++ {
+		key := make([]byte, 8)
+		rand.Read(key)
+		keys[i] = key
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		var tree Tree
+		for _, key := range keys {
+			tree.Insert(key, key)
+		}
+	}
+}
+
 func TestTreeConcurrentInsert(t *testing.T) {
 	var tree Tree
 	keys := []string{

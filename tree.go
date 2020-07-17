@@ -19,7 +19,7 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 	)
 	for restart {
 		version, restart = t.lock.RLock()
-		l := leaf{key: key, value: value}
+		l := &leaf{key: key, value: value}
 		if t.root == nil {
 			restart = t.lock.Upgrade(version, nil)
 			if restart {
@@ -79,7 +79,7 @@ func (t *Tree) Delete(key []byte) {
 	)
 	for restart {
 		version, _ = t.lock.RLock()
-		l, isLeaf := t.root.(leaf)
+		l, isLeaf := t.root.(*leaf)
 		if isLeaf && l.cmp(key) {
 			restart = t.lock.Upgrade(version, nil)
 			if restart {

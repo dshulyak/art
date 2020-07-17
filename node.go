@@ -33,7 +33,7 @@ func comparePrefix(k1, k2 []byte, off1, off2 int) int {
 type walkFn func(node, int) bool
 
 type node interface {
-	insert(leaf, int, *olock, uint64) (node, bool)
+	insert(*leaf, int, *olock, uint64) (node, bool)
 	del([]byte, int, *olock, uint64, func(node)) bool
 	get([]byte, int, *olock, uint64) (ValueType, bool, bool)
 	walk(walkFn, int) bool
@@ -110,7 +110,7 @@ func (n *inner) get(key []byte, depth int, parent *olock, parentVersion uint64) 
 // insert
 // TODO(dshulyak) no need to return pointer, the only case when we need to return pointer
 // is when leaf has changed
-func (n *inner) insert(l leaf, depth int, parent *olock, parentVersion uint64) (node, bool) {
+func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) (node, bool) {
 	// NOTE(dshulyak) in this implementation we don't need to hold parent lock.
 	// in the reference implementation parent needs to be updated with a different pointer if:
 	// 1. node changed size
@@ -221,7 +221,7 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 			return false
 		}
 
-		if l, isLeaf := next.(leaf); isLeaf && l.cmp(key) {
+		if l, isLeaf := next.(*leaf); isLeaf && l.cmp(key) {
 			_, isNode4 := n.node.(*node4)
 			min := n.node.min()
 			if isNode4 && min && n.prefixLen < maxPrefixLen {
@@ -316,28 +316,28 @@ type leaf struct {
 	value ValueType
 }
 
-func (l leaf) isLeaf() bool {
+func (l *leaf) isLeaf() bool {
 	return true
 }
 
-func (l leaf) walk(fn walkFn, depth int) bool {
+func (l *leaf) walk(fn walkFn, depth int) bool {
 	return fn(l, depth)
 }
 
-func (l leaf) get(key []byte, depth int, parent *olock, parentVersion uint64) (ValueType, bool, bool) {
+func (l *leaf) get(key []byte, depth int, parent *olock, parentVersion uint64) (ValueType, bool, bool) {
 	if l.cmp(key) {
 		return l.value, true, false
 	}
 	return nil, false, false
 }
 
-func (l leaf) cmp(other []byte) bool {
+func (l *leaf) cmp(other []byte) bool {
 	return bytes.Compare(l.key, other) == 0
 }
 
 // insert updates leaf if key matches previous leaf or performs expansion if needed.
 // expansion creates node4 and adds two leafs as childs.
-func (l leaf) insert(other leaf, depth int, parent *olock, parentVersion uint64) (node, bool) {
+func (l *leaf) insert(other *leaf, depth int, parent *olock, parentVersion uint64) (node, bool) {
 	if other.cmp(l.key) {
 		return other, false
 	}
@@ -360,15 +360,15 @@ func (l leaf) insert(other leaf, depth int, parent *olock, parentVersion uint64)
 	return nn, false
 }
 
-func (l leaf) del([]byte, int, *olock, uint64, func(node)) bool {
+func (l *leaf) del([]byte, int, *olock, uint64, func(node)) bool {
 	panic("not needed")
 }
 
-func (l leaf) inherit([maxPrefixLen]byte, int) node {
+func (l *leaf) inherit([maxPrefixLen]byte, int) node {
 	return l
 }
 
-func (l leaf) String() string {
+func (l *leaf) String() string {
 	return fmt.Sprintf("leaf[%x]", l.key)
 }
 
