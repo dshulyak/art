@@ -390,7 +390,7 @@ func TestTreeConcurrentInsert(t *testing.T) {
 		"aedd",
 		"aqdd",
 	}
-	updates := 100
+	updates := 10
 	var wg sync.WaitGroup
 	for _, key := range keys {
 		wg.Add(1)
@@ -411,8 +411,8 @@ func TestTreeConcurrentInsert(t *testing.T) {
 }
 
 func TestTreeConcurrentDelete(t *testing.T) {
-	cnt := 100000
-	factor := 16
+	cnt := 100_000
+	factor := 8
 	keys := [][]byte{}
 	var tree Tree
 	for i := 0; i < cnt; i++ {

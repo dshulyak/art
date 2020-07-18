@@ -61,20 +61,15 @@ func (n *inner) walk(fn walkFn, depth int) bool {
 	return n.node.walk(fn, depth+n.prefixLen+1)
 }
 
-func (n *inner) get(key []byte, depth int, parent *olock, parentVersion uint64) (value ValueType, found bool, obsolete bool) {
-	var (
-		version uint64
-		restart = true
-	)
-	for restart {
-		version, obsolete = n.lock.RLock()
+func (n *inner) get(key []byte, depth int, parent *olock, parentVersion uint64) (ValueType, bool, bool) {
+	for {
+		version, obsolete := n.lock.RLock()
 		if obsolete || parent.RUnlock(parentVersion, nil) {
 			return nil, false, true
 		}
 		cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
 		if cmp != n.prefixLen {
-			restart = n.lock.RUnlock(version, nil)
-			if restart {
+			if n.lock.RUnlock(version, nil) {
 				continue
 			}
 			return nil, false, false
@@ -84,21 +79,19 @@ func (n *inner) get(key []byte, depth int, parent *olock, parentVersion uint64) 
 		next := n.node.next(key[nextDepth])
 
 		if next == nil {
-			restart = n.lock.RUnlock(version, nil)
-			if restart {
+			if n.lock.RUnlock(version, nil) {
 				continue
 			}
 			return nil, false, false
 		}
 		if next.isLeaf() {
-			value, found, _ = next.get(key, nextDepth+1, &n.lock, version)
-			restart = n.lock.RUnlock(version, nil)
-			if restart {
+			value, found, _ := next.get(key, nextDepth+1, &n.lock, version)
+			if n.lock.RUnlock(version, nil) {
 				continue
 			}
 			return value, found, false
 		}
-		value, found, restart = next.get(key, nextDepth+1, &n.lock, version)
+		value, found, restart := next.get(key, nextDepth+1, &n.lock, version)
 		if restart {
 			continue
 		}
@@ -118,21 +111,18 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 	// 3. path to leaf is uncompressed
 	// 1 and 2 doesn't lead to change of pointer address in this implementation
 	// 3 is handled by an explicit check that the next node is leaf and obtaining write lock before updating leaf
-	var (
-		version  uint64
-		restart  = true
-		obsolete bool
-	)
-	for restart {
-		version, obsolete = n.lock.RLock()
-		if obsolete || parent.RUnlock(parentVersion, nil) {
+	for {
+		version, obsolete := n.lock.RLock()
+		if obsolete {
 			return n, true
 		}
 		cmp := comparePrefix(n.prefix[:n.prefixLen], l.key, 0, depth)
 		if cmp != n.prefixLen {
-			restart = n.lock.Upgrade(version, nil)
-			if restart {
+			if n.lock.Upgrade(version, nil) {
 				continue
+			}
+			if parent.RUnlock(parentVersion, &n.lock) {
+				return n, true
 			}
 			child := &inner{
 				prefixLen: n.prefixLen - cmp - 1,
@@ -151,9 +141,11 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 		idx, next := n.node.child(l.key[nextDepth])
 
 		if next == nil {
-			restart = n.lock.Upgrade(version, nil)
-			if restart {
+			if n.lock.Upgrade(version, nil) {
 				continue
+			}
+			if parent.RUnlock(parentVersion, &n.lock) {
+				return n, true
 			}
 			if n.node.full() {
 				n.node = n.node.grow()
@@ -162,10 +154,11 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 			n.lock.Unlock()
 			return n, false
 		}
-
+		if parent.RUnlock(parentVersion, nil) {
+			return n, true
+		}
 		if next.isLeaf() {
-			restart = n.lock.Upgrade(version, nil)
-			if restart {
+			if n.lock.Upgrade(version, nil) {
 				continue
 			}
 			replacement, _ := next.insert(l, nextDepth+1, &n.lock, version)
@@ -174,7 +167,7 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 			return n, false
 		}
 
-		_, restart = next.insert(l, nextDepth+1, &n.lock, version)
+		_, restart := next.insert(l, nextDepth+1, &n.lock, version)
 		if restart {
 			continue
 		}
@@ -188,25 +181,19 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 // - either completely, pointer to the leaf will be returned
 // - partially, e.g. prefixLen will be increased and prefixes merged
 func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, replace func(node)) bool {
-	var (
-		version  uint64
-		restart  = true
-		obsolete bool
-	)
-	for restart {
-		version, obsolete = n.lock.RLock()
-		if obsolete || parent.RUnlock(parentVersion, nil) {
+	for {
+		version, obsolete := n.lock.RLock()
+		if obsolete {
 			return true
 		}
 
 		cmp := comparePrefix(n.prefix[:n.prefixLen], key, 0, depth)
 		if cmp != n.prefixLen {
 			// key is not found, check for concurrent writes and exit
-			restart = n.lock.RUnlock(version, nil)
-			if restart {
+			if n.lock.RUnlock(version, nil) {
 				continue
 			}
-			return false
+			return parent.RUnlock(parentVersion, nil)
 		}
 
 		nextDepth := depth + n.prefixLen
@@ -214,11 +201,10 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 
 		if next == nil {
 			// key is not found, check for concurrent writes and exit
-			restart = n.lock.RUnlock(version, nil)
-			if restart {
+			if n.lock.RUnlock(version, nil) {
 				continue
 			}
-			return false
+			return parent.RUnlock(parentVersion, nil)
 		}
 
 		if l, isLeaf := next.(*leaf); isLeaf && l.cmp(key) {
@@ -226,12 +212,10 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 			min := n.node.min()
 			if isNode4 && min && n.prefixLen < maxPrefixLen {
 				// update parent pointer. current node will be collapsed.
-				restart = parent.Upgrade(parentVersion, nil)
-				if restart {
-					continue
+				if parent.Upgrade(parentVersion, nil) {
+					return true
 				}
-				restart = n.lock.Upgrade(version, parent)
-				if restart {
+				if n.lock.Upgrade(version, parent) {
 					continue
 				}
 
@@ -247,9 +231,11 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 				return false
 			}
 			// local change. parent lock won't be required
-			restart = n.lock.Upgrade(version, nil)
-			if restart {
+			if n.lock.Upgrade(version, nil) {
 				continue
+			}
+			if parent.RUnlock(parentVersion, &n.lock) {
+				return true
 			}
 			n.node.replace(idx, nil)
 			if min && !isNode4 {
@@ -260,17 +246,19 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 		} else if isLeaf {
 			// key is not found. false-positive lookup due to compression.
 			// check for concurrent writes and exit
-			restart = n.lock.RUnlock(version, nil)
-			if restart {
+			if n.lock.RUnlock(version, nil) {
 				continue
 			}
-			return false
+			return parent.RUnlock(parentVersion, nil)
 		}
 
-		restart = next.del(key, nextDepth+1, &n.lock, version, func(rn node) {
+		if parent.RUnlock(parentVersion, nil) {
+			return true
+		}
+
+		if next.del(key, nextDepth+1, &n.lock, version, func(rn node) {
 			n.node.replace(idx, rn)
-		})
-		if restart {
+		}) {
 			continue
 		}
 		return false

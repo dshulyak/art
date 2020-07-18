@@ -12,17 +12,11 @@ type Tree struct {
 }
 
 func (t *Tree) Insert(key []byte, value ValueType) {
-	var (
-		restart = true
-		version uint64
-		root    node
-	)
-	for restart {
-		version, restart = t.lock.RLock()
+	for {
+		version, restart := t.lock.RLock()
 		l := &leaf{key: key, value: value}
 		if t.root == nil {
-			restart = t.lock.Upgrade(version, nil)
-			if restart {
+			if t.lock.Upgrade(version, nil) {
 				continue
 			}
 			t.root = l
@@ -30,15 +24,14 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 			return
 		}
 		if t.root.isLeaf() {
-			restart = t.lock.Upgrade(version, nil)
-			if restart {
+			if t.lock.Upgrade(version, nil) {
 				continue
 			}
 			t.root, _ = t.root.insert(l, 0, &t.lock, version)
 			t.lock.Unlock()
 			return
 		}
-		root, restart = t.root.insert(l, 0, &t.lock, version)
+		root, restart := t.root.insert(l, 0, &t.lock, version)
 		if restart {
 			continue
 		}
@@ -48,58 +41,46 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 	panic("unreachable")
 }
 
-func (t *Tree) Get(key []byte) (val ValueType, found bool) {
-	var (
-		version uint64
-		restart = true
-	)
-	for restart {
-		version, _ = t.lock.RLock()
+func (t *Tree) Get(key []byte) (ValueType, bool) {
+	for {
+		version, _ := t.lock.RLock()
 		root := t.root
-		restart = t.lock.RUnlock(version, nil)
-		if restart {
+		if t.lock.RUnlock(version, nil) {
 			continue
 		}
 		if root == nil {
-			return
+			return nil, false
 		}
-		val, found, restart = root.get(key, 0, &t.lock, version)
+		val, found, restart := root.get(key, 0, &t.lock, version)
 		if restart {
 			continue
 		}
-		return
+		return val, found
 	}
 	panic("unreachable")
 }
 
 func (t *Tree) Delete(key []byte) {
-	var (
-		version uint64
-		restart = true
-	)
-	for restart {
-		version, _ = t.lock.RLock()
+	for {
+		version, _ := t.lock.RLock()
 		l, isLeaf := t.root.(*leaf)
 		if isLeaf && l.cmp(key) {
-			restart = t.lock.Upgrade(version, nil)
-			if restart {
+			if t.lock.Upgrade(version, nil) {
 				continue
 			}
 			t.root = nil
 			t.lock.Unlock()
 			return
 		} else if isLeaf {
-			restart = t.lock.RUnlock(version, nil)
-			if restart {
+			if t.lock.RUnlock(version, nil) {
 				continue
 			}
 			return
 		}
 
-		restart = t.root.del(key, 0, &t.lock, version, func(rn node) {
+		if t.root.del(key, 0, &t.lock, version, func(rn node) {
 			t.root = rn
-		})
-		if restart {
+		}) {
 			continue
 		}
 		return
