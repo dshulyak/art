@@ -100,9 +100,7 @@ func (n *inner) get(key []byte, depth int, parent *olock, parentVersion uint64) 
 	panic("unreachable")
 }
 
-// insert
-// TODO(dshulyak) no need to return pointer, the only case when we need to return pointer
-// is when leaf has changed
+// insert ...
 func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) (node, bool) {
 	// NOTE(dshulyak) in this implementation we don't need to hold parent lock.
 	// in the reference implementation parent needs to be updated with a different pointer if:
@@ -161,6 +159,7 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 			if n.lock.Upgrade(version, nil) {
 				continue
 			}
+
 			replacement, _ := next.insert(l, nextDepth+1, &n.lock, version)
 			n.node.replace(idx, replacement)
 			n.lock.Unlock()
@@ -198,7 +197,6 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 
 		nextDepth := depth + n.prefixLen
 		idx, next := n.node.child(key[nextDepth])
-
 		if next == nil {
 			// key is not found, check for concurrent writes and exit
 			if n.lock.RUnlock(version, nil) {
@@ -216,7 +214,8 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 					return true
 				}
 				if n.lock.Upgrade(version, parent) {
-					continue
+					// need to update parent version
+					return true
 				}
 
 				n.node.replace(idx, nil)
@@ -224,9 +223,10 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 				leftb, left := n.node.leftmost()
 				n.prefix[n.prefixLen] = leftb
 				n.prefixLen++
+
 				replace(left.inherit(n.prefix, n.prefixLen))
 
-				n.lock.UnlockObsolete()
+				n.lock.Unlock()
 				parent.Unlock()
 				return false
 			}
@@ -545,7 +545,10 @@ func (n *node16) grow() inode {
 		lth: n.lth,
 	}
 	copy(nn.childs[:], n.childs[:])
-	for i := range n.childs {
+	for i, child := range n.childs {
+		if child == nil {
+			continue
+		}
 		nn.keys[n.keys[i]] = uint16(i) + 1
 	}
 	return nn
@@ -593,7 +596,7 @@ func (n *node48) child(k byte) (int, node) {
 	if idx == 0 {
 		return 0, nil
 	}
-	return int(idx) - 1, n.childs[idx-1]
+	return int(k), n.childs[idx-1]
 }
 
 func (n *node48) next(k byte) node {
@@ -609,9 +612,15 @@ func (n *node48) full() bool {
 }
 
 func (n *node48) addChild(k byte, child node) {
-	n.keys[k] = uint16(n.lth + 1)
-	n.childs[n.lth] = child
-	n.lth++
+	for idx, existing := range n.childs {
+		if existing == nil {
+			n.keys[k] = uint16(idx + 1)
+			n.childs[idx] = child
+			n.lth++
+			return
+		}
+	}
+	panic("no empty slots")
 }
 
 func (n *node48) grow() inode {
@@ -627,9 +636,14 @@ func (n *node48) grow() inode {
 	return nn
 }
 
-func (n *node48) replace(idx int, child node) {
-	n.childs[idx] = child
+func (n *node48) replace(k int, child node) {
+	idx := n.keys[k]
+	if idx == 0 {
+		panic("replace can't be called for idx=0")
+	}
+	n.childs[idx-1] = child
 	if child == nil {
+		n.keys[k] = 0
 		n.lth--
 	}
 }

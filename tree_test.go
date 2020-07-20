@@ -439,3 +439,46 @@ func TestTreeConcurrentDelete(t *testing.T) {
 	wg.Wait()
 	require.True(t, tree.Empty())
 }
+
+func TestTreeInsertDeleteConcurrent(t *testing.T) {
+	var (
+		wg   sync.WaitGroup
+		cnt  = 100
+		keys = [][]byte{}
+
+		tree = Tree{}
+	)
+	for i := 0; i < cnt; i++ {
+		key := make([]byte, 8)
+		rand.Read(key)
+		keys = append(keys, key)
+	}
+
+	wg.Add(2)
+	go func() {
+		for i := 0; i < cnt; i++ {
+			key := keys[rand.Intn(len(keys))]
+			tree.Insert(key, key)
+		}
+		wg.Done()
+	}()
+
+	go func() {
+		for i := 0; i < cnt; i++ {
+			key := keys[rand.Intn(len(keys))]
+			tree.Delete(key)
+		}
+		wg.Done()
+	}()
+	wg.Wait()
+
+	for _, key := range keys {
+		tree.Delete(key)
+	}
+	for _, key := range keys {
+		_, found := tree.Get(key)
+		require.False(t, found)
+	}
+
+	require.True(t, tree.Empty())
+}

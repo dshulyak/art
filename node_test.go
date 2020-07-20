@@ -1,6 +1,9 @@
 package art
 
 import (
+	"fmt"
+	"math/rand"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -132,4 +135,93 @@ func TestNodeChilds(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNodesConcurrentShrink(t *testing.T) {
+	var (
+		root     = &inner{node: &node4{}}
+		rootLock olock
+	)
+	for i := 0; i < 48; i++ {
+		_, restart := root.insert(&leaf{key: []byte{byte(i)}}, 0, &rootLock, 0)
+		require.False(t, restart)
+	}
+	version1, _ := rootLock.RLock()
+	rootLock.Lock()
+	rootLock.Unlock()
+	restart := root.del([]byte{0}, 0, &rootLock, version1, func(rn node) {
+		root.node.replace(0, rn)
+	})
+	require.True(t, restart)
+	version2, _ := rootLock.RLock()
+	_, restart = root.insert(&leaf{key: []byte{50}}, 0, &rootLock, version2)
+	require.False(t, restart)
+	version3, _ := rootLock.RLock()
+	restart = root.del([]byte{0}, 0, &rootLock, version3, func(rn node) {
+		root.node.replace(0, rn)
+	})
+	require.False(t, restart)
+}
+
+func TestNode48Insert(t *testing.T) {
+	var (
+		n48    = &node48{}
+		n      = inner{node: n48}
+		parent olock
+	)
+	keys := make([][]byte, 48)
+	for i := range keys {
+		key := make([]byte, 20)
+		rand.Read(key)
+		keys[i] = key
+	}
+	var wg sync.WaitGroup
+	for _, key := range keys {
+		wg.Add(1)
+		go func(key []byte) {
+			for i := 0; i < 100; i++ {
+				n.insert(&leaf{key: key}, 0, &parent, 0)
+			}
+			wg.Done()
+		}(key)
+	}
+	wg.Wait()
+	fmt.Println(n48.childs)
+}
+
+func TestNode48InsertDelete(t *testing.T) {
+	var (
+		n48    = &node48{}
+		n      = inner{node: n48}
+		parent olock
+	)
+	keys := make([][]byte, 16)
+	for i := range keys {
+		key := make([]byte, 20)
+		rand.Read(key)
+		keys[i] = key
+	}
+	var wg sync.WaitGroup
+	for _, key := range keys {
+		wg.Add(1)
+		go func(key []byte) {
+			for i := 0; i < 100; i++ {
+				n.insert(&leaf{key: key}, 0, &parent, 0)
+			}
+			wg.Done()
+		}(key)
+	}
+
+	for _, key := range keys[15:] {
+		wg.Add(1)
+		go func(key []byte) {
+			for i := 0; i < 100; i++ {
+				n.del(key, 0, &parent, 0, func(node) {
+				})
+			}
+			wg.Done()
+		}(key)
+	}
+
+	wg.Wait()
 }

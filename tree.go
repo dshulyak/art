@@ -15,7 +15,8 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 	for {
 		version, restart := t.lock.RLock()
 		l := &leaf{key: key, value: value}
-		if t.root == nil {
+		root := t.root
+		if root == nil {
 			if t.lock.Upgrade(version, nil) {
 				continue
 			}
@@ -23,19 +24,18 @@ func (t *Tree) Insert(key []byte, value ValueType) {
 			t.lock.Unlock()
 			return
 		}
-		if t.root.isLeaf() {
+		if root.isLeaf() {
 			if t.lock.Upgrade(version, nil) {
 				continue
 			}
-			t.root, _ = t.root.insert(l, 0, &t.lock, version)
+			t.root, _ = root.insert(l, 0, &t.lock, version)
 			t.lock.Unlock()
 			return
 		}
-		root, restart := t.root.insert(l, 0, &t.lock, version)
+		_, restart = root.insert(l, 0, &t.lock, version)
 		if restart {
 			continue
 		}
-		t.root = root
 		return
 	}
 	panic("unreachable")
@@ -45,10 +45,10 @@ func (t *Tree) Get(key []byte) (ValueType, bool) {
 	for {
 		version, _ := t.lock.RLock()
 		root := t.root
-		if t.lock.RUnlock(version, nil) {
-			continue
-		}
 		if root == nil {
+			if t.lock.RUnlock(version, nil) {
+				continue
+			}
 			return nil, false
 		}
 		val, found, restart := root.get(key, 0, &t.lock, version)
@@ -63,8 +63,18 @@ func (t *Tree) Get(key []byte) (ValueType, bool) {
 func (t *Tree) Delete(key []byte) {
 	for {
 		version, _ := t.lock.RLock()
-		l, isLeaf := t.root.(*leaf)
-		if isLeaf && l.cmp(key) {
+
+		root := t.root
+		if root == nil {
+			if t.lock.RUnlock(version, nil) {
+				continue
+			}
+			return
+		}
+
+		l, isLeaf := root.(*leaf)
+		// NOTE(dshulyak) not sure why `l != nil` is necessary
+		if isLeaf && l != nil && l.cmp(key) {
 			if t.lock.Upgrade(version, nil) {
 				continue
 			}
@@ -78,7 +88,7 @@ func (t *Tree) Delete(key []byte) {
 			return
 		}
 
-		if t.root.del(key, 0, &t.lock, version, func(rn node) {
+		if root.del(key, 0, &t.lock, version, func(rn node) {
 			t.root = rn
 		}) {
 			continue

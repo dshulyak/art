@@ -1,6 +1,7 @@
 package art
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -79,4 +80,74 @@ func TestOlock(t *testing.T) {
 		require.False(t, restart)
 		require.False(t, lock.Upgrade(version, nil))
 	})
+}
+
+type integer struct {
+	lock  olock
+	value int
+}
+
+func (i *integer) inc() {
+	for {
+		version, _ := i.lock.RLock()
+		if i.lock.Upgrade(version, nil) {
+			continue
+		}
+		i.value++
+		i.lock.Unlock()
+		return
+	}
+}
+
+func (i *integer) cas(from, to int) {
+	for {
+		version, _ := i.lock.RLock()
+		if i.value != from {
+			if i.lock.RUnlock(version, nil) {
+				continue
+			}
+			return
+		}
+
+		if i.lock.Upgrade(version, nil) {
+			continue
+		}
+		i.value += to
+		i.lock.Unlock()
+		return
+	}
+}
+
+func TestOlockIncrement(t *testing.T) {
+	var (
+		it integer
+		wg sync.WaitGroup
+	)
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			it.inc()
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, 100, it.value)
+}
+
+func TestOlockCas(t *testing.T) {
+	var (
+		it integer
+		wg sync.WaitGroup
+	)
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			it.cas(0, 100)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, 100, it.value)
 }
