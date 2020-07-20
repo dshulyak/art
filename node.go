@@ -109,9 +109,9 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 		}
 		cmp := comparePrefix(n.prefix[:n.prefixLen], l.key, 0, depth)
 		if cmp != n.prefixLen {
-			// technically parent lock required here
+			// parent lock is required
 			// because parent may collapse and child will have
-			// to `inherit` parent lock
+			// to `inherit` parent prefix
 			// `inherit` routine updates prefixLen and prefix
 			if parent.Upgrade(parentVersion, nil) {
 				return nil, true
@@ -323,28 +323,42 @@ func (l *leaf) cmp(other []byte) bool {
 }
 
 // insert updates leaf if key matches previous leaf or performs expansion if needed.
-// expansion creates node4 and adds two leafs as childs.
+// expansion creates node4 and adds two leafs as childs
 func (l *leaf) insert(other *leaf, depth int, parent *olock, parentVersion uint64) (node, bool) {
 	if other.cmp(l.key) {
 		return other, false
 	}
-	cmp := comparePrefix(l.key, other.key, depth, depth)
-	nn := &inner{
-		prefixLen: cmp,
-		node:      &node4{},
+
+	var (
+		head *inner
+		prev *inner
+	)
+	for {
+		cmp := comparePrefix(l.key, other.key, depth, depth)
+		nn := &inner{
+			prefixLen: cmp,
+			node:      &node4{},
+		}
+
+		copy(nn.prefix[:], l.key[depth:depth+cmp])
+
+		if head == nil {
+			head = nn
+		}
+
+		if prev != nil {
+			prev.node.addChild(l.key[depth-1], nn)
+		}
+
+		if cmp < maxPrefixLen {
+			nn.node.addChild(l.key[depth+cmp], l)
+			nn.node.addChild(other.key[depth+cmp], other)
+			break
+		}
+		prev = nn
+		depth += cmp + 1
 	}
-	key := l.key
-	if len(other.key) > len(key) {
-		key = other.key
-	}
-	copy(nn.prefix[:], key[depth:depth+cmp])
-	// max prefix length is 8 byte, if common prefix longer than
-	// that then multiple inner nodes will be inserted
-	// see `long keys` test
-	var zerolock olock
-	_, _ = nn.insert(other, depth, &zerolock, 0)
-	_, _ = nn.insert(l, depth, &zerolock, 0)
-	return nn, false
+	return head, false
 }
 
 func (l *leaf) del([]byte, int, *olock, uint64, func(node)) bool {

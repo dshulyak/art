@@ -1,7 +1,10 @@
+// +build !race
+
 package art
 
 import (
 	"runtime"
+	"sync"
 	"sync/atomic"
 )
 
@@ -12,7 +15,10 @@ import (
 // respectively.  The remaining bits store the update counte
 //
 // Zero value is unlocked.
-type olock uint64
+type olock struct {
+	_       sync.Mutex // for compiler warning if Mutex is copied after first use
+	version uint64
+}
 
 // RLock waits for node to be unlocked and returns current version, possibly obsolete.
 // If version is obsolete user must discard used object and restart execution.
@@ -26,7 +32,7 @@ func (ol *olock) RLock() (uint64, bool) {
 // RUnlock compares read lock with current value of the olock, in case if
 // value got changed - RUnlock will return true.
 func (ol *olock) RUnlock(version uint64, locked *olock) bool {
-	if atomic.LoadUint64((*uint64)(ol)) != version {
+	if atomic.LoadUint64(&ol.version) != version {
 		if locked != nil {
 			locked.Unlock()
 		}
@@ -37,7 +43,7 @@ func (ol *olock) RUnlock(version uint64, locked *olock) bool {
 
 // Upgrade current lock to write lock, in case of failure to update locked lock will be unlocked.
 func (ol *olock) Upgrade(version uint64, locked *olock) bool {
-	if !atomic.CompareAndSwapUint64((*uint64)(ol), version, setLockedBit(version)) {
+	if !atomic.CompareAndSwapUint64(&ol.version, version, setLockedBit(version)) {
 		if locked != nil {
 			locked.Unlock()
 		}
@@ -48,7 +54,7 @@ func (ol *olock) Upgrade(version uint64, locked *olock) bool {
 
 // Check returns true if version has changed.
 func (ol *olock) Check(version uint64) bool {
-	return !(atomic.LoadUint64((*uint64)(ol)) == version)
+	return !(atomic.LoadUint64(&ol.version) == version)
 }
 
 func (ol *olock) Lock() {
@@ -66,16 +72,16 @@ func (ol *olock) Lock() {
 }
 
 func (ol *olock) Unlock() {
-	atomic.AddUint64((*uint64)(ol), 2)
+	atomic.AddUint64(&ol.version, 2)
 }
 
 func (ol *olock) UnlockObsolete() {
-	atomic.AddUint64((*uint64)(ol), 3)
+	atomic.AddUint64(&ol.version, 3)
 }
 
 func (ol *olock) waitUnlocked() uint64 {
 	for {
-		version := atomic.LoadUint64((*uint64)(ol))
+		version := atomic.LoadUint64(&ol.version)
 		if version&2 != 2 {
 			return version
 		}
