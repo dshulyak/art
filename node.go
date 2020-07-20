@@ -102,13 +102,6 @@ func (n *inner) get(key []byte, depth int, parent *olock, parentVersion uint64) 
 
 // insert ...
 func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) (node, bool) {
-	// NOTE(dshulyak) in this implementation we don't need to hold parent lock.
-	// in the reference implementation parent needs to be updated with a different pointer if:
-	// 1. node changed size
-	// 2. prefix needs to be splitted
-	// 3. path to leaf is uncompressed
-	// 1 and 2 doesn't lead to change of pointer address in this implementation
-	// 3 is handled by an explicit check that the next node is leaf and obtaining write lock before updating leaf
 	for {
 		version, obsolete := n.lock.RLock()
 		if obsolete {
@@ -116,11 +109,15 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 		}
 		cmp := comparePrefix(n.prefix[:n.prefixLen], l.key, 0, depth)
 		if cmp != n.prefixLen {
-			if n.lock.Upgrade(version, nil) {
-				continue
+			// technically parent lock required here
+			// because parent may collapse and child will have
+			// to `inherit` parent lock
+			// `inherit` routine updates prefixLen and prefix
+			if parent.Upgrade(parentVersion, nil) {
+				return nil, true
 			}
-			if parent.RUnlock(parentVersion, &n.lock) {
-				return n, true
+			if n.lock.Upgrade(version, parent) {
+				return nil, true
 			}
 			child := &inner{
 				prefixLen: n.prefixLen - cmp - 1,
@@ -131,7 +128,9 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 			n.node.addChild(l.key[depth+cmp], l)
 			n.node.addChild(n.prefix[cmp], child)
 			n.prefixLen = cmp
+
 			n.lock.Unlock()
+			parent.Unlock()
 			return n, false
 		}
 
@@ -175,7 +174,7 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 	panic("unreachable")
 }
 
-// del deletes the node with key and returns pointer for the parent to update himself.
+// del deletes the node with key and returns pointer for the parent for update.
 // pointer may change if path is comressed:
 // - either completely, pointer to the leaf will be returned
 // - partially, e.g. prefixLen will be increased and prefixes merged
