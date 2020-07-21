@@ -1,3 +1,5 @@
+github.com/anishathalye/porcupine v0.1.0 h1:/emkEoaFAiutyuy6mJ/5yrRvG3tuLOC7Bo/1wZrRPeY=
+github.com/anishathalye/porcupine v0.1.0/go.mod h1:/X9OQYnVb7DzfKCQVO4tI1Aq+o56UJW+RvN/5U4EuZA=
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/mmcloughlin/avo v0.0.0-20200523190732-4439b6b2c061 h1:UCU8+cLbbvyxi0sQ9fSeoEhZgvrrD9HKMtX6Gmc1vk8=
