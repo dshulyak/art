@@ -10,7 +10,7 @@ TEXT ·search(SB), NOSPLIT, $0-18
 	VPXOR    X1, X1, X1
 	VMOVD    (AX), X0
 	VPSHUFB  X1, X0, X0
-	MOVOU    (CX), X1
+	VLDDQU   (CX), X1
 	PCMPEQB  X1, X0
 	PMOVMSKB X0, AX
 	MOVW     AX, ret+16(FP)

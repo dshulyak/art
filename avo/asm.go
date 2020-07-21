@@ -18,7 +18,7 @@ func main() {
 	VMOVD(Mem{Base: key}, x0)
 	VPSHUFB(x1, x0, x0)
 
-	MOVOU(nkey.Offset(0x00), x2)
+	VLDDQU(nkey.Offset(0x00), x2)
 	PCMPEQB(x2, x0)
 	PMOVMSKB(x0, mask)
 
