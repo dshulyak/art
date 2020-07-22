@@ -486,12 +486,10 @@ func TestTreeInsertDeleteConcurrent(t *testing.T) {
 	require.True(t, tree.Empty())
 }
 
-func randomKey(rng *rand.Rand) []byte {
-	b := make([]byte, 16)
-	key := rng.Uint32()
-	key2 := rng.Uint32()
-	binary.LittleEndian.PutUint32(b, key)
-	binary.LittleEndian.PutUint32(b[4:], key2)
+func randomKey(rng *rand.Rand) [16]byte {
+	b := [16]byte{}
+	binary.LittleEndian.PutUint32(b[:], rng.Uint32())
+	binary.LittleEndian.PutUint32(b[4:], rng.Uint32())
 	binary.BigEndian.PutUint64(b[8:], math.MaxUint64)
 	return b
 }
@@ -506,10 +504,33 @@ func BenchmarkGetInsert(b *testing.B) {
 			b.RunParallel(func(pb *testing.PB) {
 				rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 				for pb.Next() {
+					key := randomKey(rng)
 					if rng.Float32() < readFrac {
-						_, _ = tree.Get(randomKey(rng))
+						_, _ = tree.Get(key[:])
 					} else {
-						tree.Insert(randomKey(rng), value)
+						tree.Insert(key[:], value)
+					}
+				}
+			})
+		})
+	}
+}
+
+func BenchmarkGetInsertSyncMap(b *testing.B) {
+	value := 123
+	for i := 0; i <= 10; i++ {
+		readFrac := float32(i) / 10.0
+		b.Run(fmt.Sprintf("frac_%d", i), func(b *testing.B) {
+			tree := sync.Map{}
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+				for pb.Next() {
+					key := randomKey(rng)
+					if rng.Float32() < readFrac {
+						_, _ = tree.Load(key)
+					} else {
+						tree.Store(key, value)
 					}
 				}
 			})

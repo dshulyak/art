@@ -76,7 +76,7 @@ func (n *inner) get(key []byte, depth int, parent *olock, parentVersion uint64) 
 		}
 
 		nextDepth := depth + n.prefixLen
-		next := n.node.next(key[nextDepth])
+		_, next := n.node.child(key[nextDepth])
 
 		if next == nil {
 			if n.lock.RUnlock(version, nil) {
@@ -219,7 +219,7 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 
 				n.node.replace(idx, nil)
 
-				leftb, left := n.node.leftmost()
+				leftb, left := n.node.next(nil)
 				n.prefix[n.prefixLen] = leftb
 				n.prefixLen++
 
@@ -376,23 +376,22 @@ func (l *leaf) String() string {
 // inode is one of the inner nodes concrete representation
 // node4/node16/node48/node256
 type inode interface {
-	// TODO refactor next/child and use one method
-	// child should convert to int
-	next(byte) node
+	// next returns child after the requested byte
+	// if byte is nil - returns leftmost child
+	next(*byte) (byte, node)
 	child(byte) (int, node)
 	// replace sets node at the index
-	// if node is nil
+	// if node is nil - delete the node and adjust metadata
 	replace(int, node)
 	full() bool
+	// grow the node to next size
+	// node256 can't grow and will return nil
 	grow() inode
-	// min refers to the size of the node, should return true if size is less
-	// then the minimum size
+	// min should return true if node size is less then the minimum size
 	min() bool
 	// shrink is the opposite to grow
 	// if node is of the smallest type (node4) nil will be returned
 	shrink() inode
-	// leftmost returns node with lowest index
-	leftmost() (byte, node)
 	addChild(byte, node)
 	walk(walkFn, int) bool
 	String() string
@@ -424,15 +423,16 @@ func (n *node4) child(k byte) (int, node) {
 	return idx, n.childs[idx]
 }
 
-func (n *node4) next(k byte) node {
-	idx := n.index(k)
-	if uint8(idx) == n.lth {
-		return nil
+func (n *node4) next(k *byte) (byte, node) {
+	if k == nil {
+		return n.keys[0], n.childs[0]
 	}
-	if n.keys[idx] != k {
-		return nil
+	for i, b := range n.keys {
+		if b > *k {
+			return b, n.childs[i]
+		}
 	}
-	return n.childs[idx]
+	return 0, nil
 }
 
 func (n *node4) replace(idx int, child node) {
@@ -445,10 +445,6 @@ func (n *node4) replace(idx int, child node) {
 	} else {
 		n.childs[idx] = child
 	}
-}
-
-func (n *node4) leftmost() (byte, node) {
-	return n.keys[0], n.childs[0]
 }
 
 func (n *node4) addChild(k byte, child node) {
@@ -520,12 +516,16 @@ func (n *node16) child(k byte) (int, node) {
 	return idx, n.childs[idx]
 }
 
-func (n *node16) next(k byte) node {
-	idx, exist := index(&k, &n.keys)
-	if !exist {
-		return nil
+func (n *node16) next(k *byte) (byte, node) {
+	if k == nil {
+		return n.keys[0], n.childs[0]
 	}
-	return n.childs[idx]
+	for i, b := range n.keys {
+		if b > *k {
+			return b, n.childs[i]
+		}
+	}
+	return 0, nil
 }
 
 func (n *node16) replace(idx int, child node) {
@@ -579,10 +579,6 @@ func (n *node16) shrink() inode {
 	return &nn
 }
 
-func (n *node16) leftmost() (byte, node) {
-	return n.keys[0], n.childs[0]
-}
-
 func (n *node16) walk(fn walkFn, depth int) bool {
 	for i := range n.childs {
 		if uint8(i) < n.lth {
@@ -612,12 +608,21 @@ func (n *node48) child(k byte) (int, node) {
 	return int(k), n.childs[idx-1]
 }
 
-func (n *node48) next(k byte) node {
-	idx := n.keys[k]
-	if idx == 0 {
-		return nil
+func (n *node48) next(k *byte) (byte, node) {
+	if k == nil {
+		for b, idx := range n.keys {
+			if idx != 0 {
+				return byte(b), n.childs[idx-1]
+			}
+		}
+		return 0, nil
 	}
-	return n.childs[idx-1]
+	for b, idx := range n.keys {
+		if byte(b) > *k && idx != 0 {
+			return byte(b), n.childs[idx-1]
+		}
+	}
+	return 0, nil
 }
 
 func (n *node48) full() bool {
@@ -684,10 +689,6 @@ func (n *node48) shrink() inode {
 	return nn
 }
 
-func (n *node48) leftmost() (byte, node) {
-	panic("not implemented")
-}
-
 func (n *node48) walk(fn walkFn, depth int) bool {
 	for _, child := range n.childs {
 		if child != nil {
@@ -725,8 +726,21 @@ func (n *node256) child(k byte) (int, node) {
 	return int(k), n.childs[k]
 }
 
-func (n *node256) next(k byte) node {
-	return n.childs[k]
+func (n *node256) next(k *byte) (byte, node) {
+	if k == nil {
+		for b, child := range n.childs {
+			if child != nil {
+				return byte(b), child
+			}
+		}
+		return 0, nil
+	}
+	for b, child := range n.childs {
+		if byte(b) > *k && child != nil {
+			return byte(b), child
+		}
+	}
+	return 0, nil
 }
 
 func (n *node256) replace(idx int, child node) {
@@ -767,10 +781,6 @@ func (n *node256) shrink() inode {
 		nn.childs[index-1] = n.childs[i]
 	}
 	return nn
-}
-
-func (n *node256) leftmost() (byte, node) {
-	panic("not implemented")
 }
 
 func (n *node256) walk(fn walkFn, depth int) bool {

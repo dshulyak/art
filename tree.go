@@ -99,7 +99,16 @@ func (t *Tree) Delete(key []byte) {
 }
 
 func (t *Tree) Empty() bool {
+	// TODO not safe to use concurrently
 	return t.root == nil
+}
+
+func (t *Tree) Iterator(start, end []byte) *iterator {
+	return &iterator{
+		tree:  t,
+		start: start,
+		end:   end,
+	}
 }
 
 // testView returns tree structure in the format used for tests.
