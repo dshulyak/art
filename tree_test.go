@@ -1,7 +1,10 @@
 package art
 
 import (
+	"encoding/binary"
 	"flag"
+	"fmt"
+	"math"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -481,4 +484,35 @@ func TestTreeInsertDeleteConcurrent(t *testing.T) {
 	}
 
 	require.True(t, tree.Empty())
+}
+
+func randomKey(rng *rand.Rand) []byte {
+	b := make([]byte, 16)
+	key := rng.Uint32()
+	key2 := rng.Uint32()
+	binary.LittleEndian.PutUint32(b, key)
+	binary.LittleEndian.PutUint32(b[4:], key2)
+	binary.BigEndian.PutUint64(b[8:], math.MaxUint64)
+	return b
+}
+
+func BenchmarkGetInsert(b *testing.B) {
+	value := 123
+	for i := 0; i <= 10; i++ {
+		readFrac := float32(i) / 10.0
+		b.Run(fmt.Sprintf("frac_%d", i), func(b *testing.B) {
+			tree := Tree{}
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+				for pb.Next() {
+					if rng.Float32() < readFrac {
+						_, _ = tree.Get(randomKey(rng))
+					} else {
+						tree.Insert(randomKey(rng), value)
+					}
+				}
+			})
+		})
+	}
 }
