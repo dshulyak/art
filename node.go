@@ -119,6 +119,7 @@ func (n *inner) insert(l *leaf, depth int, parent *olock, parentVersion uint64) 
 			if n.lock.Upgrade(version, parent) {
 				return nil, true
 			}
+
 			child := &inner{
 				prefixLen: n.prefixLen - cmp - 1,
 				node:      n.node,
@@ -243,8 +244,7 @@ func (n *inner) del(key []byte, depth int, parent *olock, parentVersion uint64, 
 			n.lock.Unlock()
 			return false
 		} else if isLeaf {
-			// key is not found. false-positive lookup due to compression.
-			// check for concurrent writes and exit
+			// key is not found. check for concurrent writes and exit
 			if n.lock.RUnlock(version, nil) {
 				continue
 			}
@@ -379,21 +379,30 @@ type inode interface {
 	// next returns child after the requested byte
 	// if byte is nil - returns leftmost child
 	next(*byte) (byte, node)
+
+	// child return index of the child together with the child
 	child(byte) (int, node)
-	// replace sets node at the index
+	// addChild inserts child at the specified byte
+	addChild(byte, node)
+	// replace updates node at specified index
 	// if node is nil - delete the node and adjust metadata
 	replace(int, node)
+
+	// full is true if node reached max size
 	full() bool
 	// grow the node to next size
 	// node256 can't grow and will return nil
 	grow() inode
-	// min should return true if node size is less then the minimum size
+
+	// min is true if node reached min size
 	min() bool
 	// shrink is the opposite to grow
 	// if node is of the smallest type (node4) nil will be returned
 	shrink() inode
-	addChild(byte, node)
+
+	// walk is internal helper to iterate in depth first order over all nodes, including inner nodes
 	walk(walkFn, int) bool
+
 	String() string
 }
 

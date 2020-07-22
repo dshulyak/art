@@ -105,9 +105,10 @@ func (t *Tree) Empty() bool {
 
 func (t *Tree) Iterator(start, end []byte) *iterator {
 	return &iterator{
-		tree:  t,
-		start: start,
-		end:   end,
+		tree:    t,
+		start:   start,
+		current: start,
+		end:     end,
 	}
 }
 

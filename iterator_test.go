@@ -84,3 +84,26 @@ func TestIterator(t *testing.T) {
 		})
 	}
 }
+
+func TestIteratorConcurrentExpansion(t *testing.T) {
+	var (
+		tree Tree
+		keys = [][]byte{
+			[]byte("aaba"),
+			[]byte("aabb"),
+		}
+	)
+
+	for _, key := range keys {
+		tree.Insert(key, key)
+	}
+	iter := tree.Iterator(nil, nil)
+	require.True(t, iter.Next())
+	require.Equal(t, keys[0], iter.Key())
+
+	tree.Insert([]byte("aaca"), nil)
+	require.True(t, iter.Next())
+	require.Equal(t, keys[1], iter.Key())
+	require.True(t, iter.Next())
+	require.Equal(t, []byte("aaca"), iter.Key())
+}
