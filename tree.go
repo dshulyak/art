@@ -103,12 +103,14 @@ func (t *Tree) Empty() bool {
 	return t.root == nil
 }
 
+// Iterator in range (start, end].
+// Iterator is concurrently safe, but doesn't guarantee to provide consistent
+// snapshot of the tree state.
 func (t *Tree) Iterator(start, end []byte) *iterator {
 	return &iterator{
-		tree:    t,
-		start:   start,
-		current: start,
-		end:     end,
+		tree:      t,
+		cursor:    start,
+		terminate: end,
 	}
 }
 

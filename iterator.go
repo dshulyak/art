@@ -14,18 +14,23 @@ type checkpoint struct {
 }
 
 // iterator will scan the tree in lexicographic order.
-// not concurrently safe
 type iterator struct {
 	tree *Tree
 
 	stack  *checkpoint
 	closed bool
 
-	current    []byte
-	start, end []byte
+	cursor, terminate []byte
+	reverse           bool
 
 	key   []byte
 	value ValueType
+}
+
+func (i *iterator) Reverse() *iterator {
+	i.cursor, i.terminate = i.terminate, i.cursor
+	i.reverse = true
+	return i
 }
 
 // Next will iterate over all leaf nodes inbetween specified prefixes
@@ -39,7 +44,7 @@ func (i *iterator) Next() bool {
 			return next
 		}
 	}
-	return i.next()
+	return i.iterate()
 }
 
 func (i *iterator) Value() ValueType {
@@ -50,26 +55,11 @@ func (i *iterator) Key() []byte {
 	return i.key
 }
 
-// updateCurrent to the key + 1 byte
-// if last byte is 0xff - next byte will be set to 0xff
-// if last byte is less than 0xff - last byte will be incremented
-func (i *iterator) updateCurrent(key []byte) {
-	lth := len(key)
-	ff := false
-	if key[lth-1] == 0xff {
-		lth++
-		ff = true
+func (i *iterator) inRange(key []byte) bool {
+	if !i.reverse {
+		return bytes.Compare(key, i.cursor) > 0 && (len(i.terminate) == 0 || bytes.Compare(key, i.terminate) <= 0)
 	}
-	if i.current == nil || len(i.current) < len(key) {
-		i.current = make([]byte, lth)
-		copy(i.current, key)
-	} else if len(i.current) > len(key) {
-		i.current = i.current[:lth]
-		copy(i.current, key)
-	}
-	if !ff {
-		i.current[len(i.current)-1]++
-	}
+	return (bytes.Compare(key, i.cursor) < 0 || len(i.cursor) == 0) && (len(i.terminate) == 0 || bytes.Compare(key, i.terminate) >= 0)
 }
 
 func (i *iterator) init() (bool, bool) {
@@ -89,10 +79,8 @@ func (i *iterator) init() (bool, bool) {
 			if i.tree.lock.RUnlock(version, nil) {
 				continue
 			}
-
 			i.closed = true
-			cmp := bytes.Compare(l.key, i.current)
-			if cmp >= 0 && (i.end == nil || bytes.Compare(l.key, i.end) <= 0) {
+			if i.inRange(l.key) {
 				i.key = l.key
 				i.value = l.value
 				return true, true
@@ -108,14 +96,20 @@ func (i *iterator) init() (bool, bool) {
 	}
 }
 
-func (i *iterator) next() bool {
+func (i *iterator) next(n *inner, pointer *byte) (byte, node) {
+	if !i.reverse {
+		return n.node.next(pointer)
+	}
+	return n.node.prev(pointer)
+}
+
+func (i *iterator) iterate() bool {
 	for i.stack != nil {
 		more, restart := i.tryAdvance()
 		if more {
 			return more
 		} else if restart {
 			i.stack = i.stack.prev
-
 			if i.stack == nil {
 				// checkpoint is root
 				i.stack = nil
@@ -139,7 +133,7 @@ func (i *iterator) tryAdvance() (bool, bool) {
 			return false, true
 		}
 
-		pointer, child := tail.node.node.next(tail.pointer)
+		pointer, child := i.next(tail.node, tail.pointer)
 
 		if child == nil {
 			if tail.node.lock.RUnlock(version, nil) {
@@ -155,11 +149,10 @@ func (i *iterator) tryAdvance() (bool, bool) {
 
 		l, isLeaf := child.(*leaf)
 		if isLeaf {
-			cmp := bytes.Compare(l.key, i.current)
-			if cmp >= 0 && (i.end == nil || bytes.Compare(l.key, i.end) <= 0) {
+			if i.inRange(l.key) {
 				i.key = l.key
 				i.value = l.value
-				i.updateCurrent(i.key)
+				i.cursor = l.key
 				return true, false
 			}
 			return false, false

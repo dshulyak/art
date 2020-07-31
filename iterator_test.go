@@ -1,7 +1,6 @@
 package art
 
 import (
-	"bytes"
 	"sort"
 	"testing"
 
@@ -10,24 +9,26 @@ import (
 
 func TestIterator(t *testing.T) {
 
-	keys := [][]byte{
-		{1, 2, 3, 4},
-		{1, 3, 4, 6},
-		{1, 3, 4, 5},
-		{1, 2, 6, 7},
+	keys := []string{
+		"1234",
+		"1245",
+		"1345",
+		"1267",
 	}
-	sorted := make([][]byte, len(keys))
+	sorted := make([]string, len(keys))
 	copy(sorted, keys)
+	sort.Strings(sorted)
 
-	sort.Slice(sorted, func(i, j int) bool {
-		return bytes.Compare(keys[i], keys[j]) < 0
-	})
+	reversed := make([]string, len(keys))
+	copy(reversed, keys)
+	sort.Sort(sort.Reverse(sort.StringSlice(reversed)))
 
 	for _, tc := range []struct {
 		desc       string
-		keys       [][]byte
-		start, end []byte
-		rst        [][]byte
+		keys       []string
+		start, end string
+		reverse    bool
+		rst        []string
 	}{
 		{
 			desc: "full",
@@ -36,7 +37,7 @@ func TestIterator(t *testing.T) {
 		},
 		{
 			desc: "empty",
-			rst:  [][]byte{},
+			rst:  []string{},
 		},
 		{
 			desc: "matching leaf",
@@ -46,46 +47,83 @@ func TestIterator(t *testing.T) {
 		{
 			desc:  "non matching leaf",
 			keys:  keys[:1],
-			rst:   [][]byte{},
-			start: []byte{1, 3},
+			rst:   []string{},
+			start: "13",
 		},
 		{
 			desc: "limited by end",
 			keys: keys,
-			end:  []byte{1, 2, 255},
+			end:  "125",
 			rst:  sorted[:2],
 		},
 		{
 			desc:  "limited by start",
 			keys:  keys,
-			start: []byte{1, 2, 4},
+			start: "124",
+			rst:   sorted[1:],
+		},
+		{
+			desc:  "start is excluded",
+			keys:  keys,
+			start: "1234",
 			rst:   sorted[1:],
 		},
 		{
 			desc:  "start to end",
 			keys:  keys,
-			start: []byte{1, 2, 255},
-			end:   []byte{1, 3, 4, 5},
+			start: "125",
+			end:   "1344",
 			rst:   sorted[2:3],
+		},
+		{
+			desc:    "reverse",
+			keys:    keys,
+			rst:     reversed,
+			reverse: true,
+		},
+		{
+			desc:    "reverse until",
+			keys:    keys,
+			start:   "1234",
+			rst:     reversed[:4],
+			reverse: true,
+		},
+		{
+			desc:    "reverse from",
+			keys:    keys,
+			end:     "1268",
+			rst:     reversed[1:],
+			reverse: true,
+		},
+		{
+			desc:    "reverse from until",
+			keys:    keys,
+			start:   "1235",
+			end:     "1268",
+			rst:     reversed[1:3],
+			reverse: true,
 		},
 	} {
 		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			var tree Tree
 			for _, key := range tc.keys {
-				tree.Insert(key, key)
+				tree.Insert([]byte(key), key)
 			}
-			iter := tree.Iterator(tc.start, tc.end)
-			rst := [][]byte{}
+			iter := tree.Iterator([]byte(tc.start), []byte(tc.end))
+			if tc.reverse {
+				iter = iter.Reverse()
+			}
+			rst := []string{}
 			for iter.Next() {
-				rst = append(rst, iter.Key())
+				rst = append(rst, iter.Value().(string))
 			}
 			require.Equal(t, tc.rst, rst)
 		})
 	}
 }
 
-func TestIteratorConcurrentExpansion(t *testing.T) {
+func TestIterConcurrentExpansion(t *testing.T) {
 	var (
 		tree Tree
 		keys = [][]byte{

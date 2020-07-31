@@ -379,6 +379,7 @@ type inode interface {
 	// next returns child after the requested byte
 	// if byte is nil - returns leftmost child
 	next(*byte) (byte, node)
+	prev(*byte) (byte, node)
 
 	// child return index of the child together with the child
 	child(byte) (int, node)
@@ -436,9 +437,26 @@ func (n *node4) next(k *byte) (byte, node) {
 	if k == nil {
 		return n.keys[0], n.childs[0]
 	}
-	for i, b := range n.keys {
+	for idx, b := range n.keys {
 		if b > *k {
-			return b, n.childs[i]
+			return b, n.childs[idx]
+		}
+	}
+	return 0, nil
+}
+
+func (n *node4) prev(k *byte) (byte, node) {
+	if n.lth == 0 {
+		return 0, nil
+	}
+	if k == nil {
+		idx := n.lth - 1
+		return n.keys[idx], n.childs[idx]
+	}
+	for i := n.lth; i > 0; i-- {
+		idx := i - 1
+		if n.keys[idx] < *k {
+			return n.keys[idx], n.childs[idx]
 		}
 	}
 	return 0, nil
@@ -537,6 +555,20 @@ func (n *node16) next(k *byte) (byte, node) {
 	return 0, nil
 }
 
+func (n *node16) prev(k *byte) (byte, node) {
+	if k == nil {
+		idx := n.lth - 1
+		return n.keys[idx], n.childs[idx]
+	}
+	for i := n.lth; i >= 0; i-- {
+		idx := i - 1
+		if n.keys[idx] < *k {
+			return n.keys[idx], n.childs[idx]
+		}
+	}
+	return 0, nil
+}
+
 func (n *node16) replace(idx int, child node) {
 	if child == nil {
 		copy(n.keys[idx:], n.keys[idx+1:])
@@ -618,17 +650,19 @@ func (n *node48) child(k byte) (int, node) {
 }
 
 func (n *node48) next(k *byte) (byte, node) {
-	if k == nil {
-		for b, idx := range n.keys {
-			if idx != 0 {
-				return byte(b), n.childs[idx-1]
-			}
-		}
-		return 0, nil
-	}
 	for b, idx := range n.keys {
-		if byte(b) > *k && idx != 0 {
+		if (k == nil || byte(b) > *k) && idx != 0 {
 			return byte(b), n.childs[idx-1]
+		}
+	}
+	return 0, nil
+}
+
+func (n *node48) prev(k *byte) (byte, node) {
+	for b := n.lth - 1; b >= 0; b-- {
+		idx := n.keys[b]
+		if (k == nil || byte(b) < *k) && idx != 0 {
+			return byte(b), n.childs[idx]
 		}
 	}
 	return 0, nil
@@ -736,17 +770,20 @@ func (n *node256) child(k byte) (int, node) {
 }
 
 func (n *node256) next(k *byte) (byte, node) {
-	if k == nil {
-		for b, child := range n.childs {
-			if child != nil {
-				return byte(b), child
-			}
-		}
-		return 0, nil
-	}
 	for b, child := range n.childs {
-		if byte(b) > *k && child != nil {
+		if (k == nil || byte(b) > *k) && child != nil {
 			return byte(b), child
+		}
+	}
+	return 0, nil
+}
+
+func (n *node256) prev(k *byte) (byte, node) {
+	for idx := n.lth - 1; idx >= 0; idx-- {
+		b := byte(idx)
+		child := n.childs[idx]
+		if (k == nil || b < *k) && child != nil {
+			return b, child
 		}
 	}
 	return 0, nil
