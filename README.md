@@ -45,7 +45,9 @@ Notes
 ---
 
 - key isn't allowed to be the direct prefix of another key. If arbitrary string are used as keys - caller must ensure that every string is null terminated.
-- library doesn't copy keys when they are inserted, caller must take care about this if such safety is requried.
+- library doesn't copy keys when they are inserted, caller must take care of this if such safety is requried.
 - safety in concurrent environment is achieved with optimistic locks.
   ROWEX-based concurrency is not implemented.
+  Note that with `-race` flag another version of lock will be used, this version is based
+  on sync.Mutex and will be very slow.
 - Non-negligible amount of time is spent in GC. Memory ballast improves, but doesn't solve, the problem.
